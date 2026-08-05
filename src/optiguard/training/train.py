@@ -242,7 +242,12 @@ if TORCH_AVAILABLE:
             train_poisson /= len(train_ds)
             
             if epoch == start_epoch or epoch % checkpoint_every == 0:
-                print(f"[Epoch {epoch:03d}] Loss: {train_loss:.4f} (L1: {train_l1:.4f}, Poisson: {train_poisson:.4f})")
+                alpha_nll = 0.05
+                print(
+                    f"[Epoch {epoch:03d}] Loss: {train_loss:.4f} "
+                    f"| L1: {train_l1:.4f} (weighted: {train_l1:.4f}) "
+                    f"| Poisson: {train_poisson:.4f} (weighted: {alpha_nll * train_poisson:.4f})"
+                )
             
             # Save latest checkpoint every epoch
             torch.save({
