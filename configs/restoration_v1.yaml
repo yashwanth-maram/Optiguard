@@ -22,4 +22,4 @@ training:
   window_channels: 128
   checkpoint_every: 5       # Validate every 5 epochs
   select_on: "constrained_gain"
-  recall_floor: 0.65        # Minimum recall at 1.5 CRLB to accept model
+  recall_floor: 0.719       # Strict raw-baseline recall at 1.5 CRLB to accept model
