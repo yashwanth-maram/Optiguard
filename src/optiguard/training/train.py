@@ -305,7 +305,7 @@ if TORCH_AVAILABLE:
                     "effective_exposure_gain": gain,
                     "recall_1p5": rec_1p5,
                     "rmse_center_cm1": rmse,
-                    "mae_center_cm1": float(val_res.mae_center_cm1),
+                    "mae_center_cm1": float(val_res.mae_center),
                     "false_feature_rate": float(val_res.false_feature_rate),
                     "recalls": {str(k): float(v) for k, v in val_res.recall_by_difficulty.items()}
                 }
