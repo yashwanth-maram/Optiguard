@@ -48,6 +48,22 @@ def generate_corpus(seed: int = 20260806, n: int = 300, window: int = 128, out_d
         diff_map = sample.difficulty(primary_exp).astype(np.float32)
         defect_mask = sample.defect_mask.astype(bool)
         
+        # Compute per-pixel CRLB at primary exposure for normalised centroid loss
+        from optiguard.physics.crlb import crlb_peak_position_map
+        rn = float(sample.meta.get("read_noise_e", 0.0))
+        crlb_map = crlb_peak_position_map(
+            axis=sample.axis,
+            center=sample.theta_true["center"],
+            fwhm=sample.theta_true["fwhm"],
+            amplitude=sample.theta_true["amplitude"] * primary_exp,
+            background=sample.theta_true["background"] * primary_exp,
+            read_noise_e=rn
+        ).astype(np.float32)
+        
+        # True peak centre and defect shift (needed for centroid loss)
+        center_true = sample.theta_true["center"].astype(np.float32)        # (H, W) cm^-1
+        defect_shift = sample.defect_shift.astype(np.float32)               # (H, W) cm^-1
+        
         sample_file = out_path / f"sample_{i:04d}.npz"
         np.savez_compressed(
             sample_file,
@@ -57,6 +73,9 @@ def generate_corpus(seed: int = 20260806, n: int = 300, window: int = 128, out_d
             axis=cropped_axis,
             defect_mask=defect_mask,
             difficulty=diff_map,
+            center_true=center_true,
+            defect_shift=defect_shift,
+            crlb_map=crlb_map,
             exposure=primary_exp,
             reference_exposure=ref_exp,
             w_start=w_start,

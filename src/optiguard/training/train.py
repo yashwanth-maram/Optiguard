@@ -56,7 +56,12 @@ if TORCH_AVAILABLE:
             # Transpose to PyTorch (C, H, W)
             x = torch.from_numpy(short.transpose(2, 0, 1).astype(np.float32))
             y = torch.from_numpy(clean.transpose(2, 0, 1).astype(np.float32))
-            return x, y
+            
+            # Centroid-loss targets
+            center_true = torch.from_numpy(data["center_true"].astype(np.float32))  # (H, W)
+            crlb_map    = torch.from_numpy(data["crlb_map"].astype(np.float32))     # (H, W)
+            axis        = torch.from_numpy(data["axis"].astype(np.float32))         # (C,)
+            return x, y, center_true, crlb_map, axis
 
 
     def evaluate_model_on_harness(model, val_samples: list, in_channels: int = 128, exposure: float = 0.1):
@@ -215,38 +220,66 @@ if TORCH_AVAILABLE:
             
         for epoch in range(start_epoch, epochs + 1):
             model.train()
-            train_loss = 0.0
-            train_l1 = 0.0
-            train_poisson = 0.0
-            for batch_x, batch_y in train_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            train_loss     = 0.0
+            train_centroid = 0.0
+            train_l1       = 0.0
+            train_poisson  = 0.0
+            for batch_x, batch_y, center_true, crlb_map, axis in train_loader:
+                batch_x    = batch_x.to(device)
+                batch_y    = batch_y.to(device)
+                center_true = center_true.to(device)   # (B, H, W)
+                crlb_map   = crlb_map.to(device)       # (B, H, W)
+                axis       = axis.to(device)            # (B, C)
                 
                 optimizer.zero_grad()
-                pred = model(batch_x)
+                pred = model(batch_x)                  # (B, C, H, W)
                 
+                # --- Centroid loss (dominant term) ---
+                # Soft-argmax over spectral axis at each pixel.
+                # Background-subtract: remove per-pixel min so continuum
+                # doesn't drag the centroid toward the window centre.
+                pred_hw_c = pred.permute(0, 2, 3, 1)           # (B, H, W, C)
+                bg = pred_hw_c.min(dim=-1, keepdim=True).values
+                pred_sub = pred_hw_c - bg                       # (B, H, W, C)
+                
+                # Soft-argmax with temperature=1 (raw predicted counts)
+                weights = torch.softmax(pred_sub, dim=-1)       # (B, H, W, C)
+                axis_exp = axis[:, None, None, :]               # (B, 1, 1, C)
+                centroid = (weights * axis_exp).sum(dim=-1)     # (B, H, W)
+                
+                # CRLB-normalised smooth-L1: error in units of CRLB
+                crlb_safe = torch.clamp(crlb_map, min=1e-6)
+                norm_err = (centroid - center_true) / crlb_safe
+                param_loss = torch.nn.functional.smooth_l1_loss(norm_err, torch.zeros_like(norm_err))
+                
+                # --- Photon-count terms ---
                 l1 = torch.nn.functional.l1_loss(pred, batch_y)
                 mu = torch.clamp(pred, min=1e-6)
                 poisson = torch.mean(mu - batch_x * torch.log(mu))
-                loss = l1 + 0.05 * poisson # alpha_nll = 0.05
+                
+                # Weights: centroid dominates (0.6), L1 structural (0.3), Poisson regulariser (0.1)
+                loss = 0.6 * param_loss + 0.3 * l1 + 0.1 * poisson
                 
                 loss.backward()
                 optimizer.step()
                 
-                train_loss += loss.item() * len(batch_x)
-                train_l1 += l1.item() * len(batch_x)
-                train_poisson += poisson.item() * len(batch_x)
+                train_loss     += loss.item()       * len(batch_x)
+                train_centroid += param_loss.item() * len(batch_x)
+                train_l1       += l1.item()         * len(batch_x)
+                train_poisson  += poisson.item()    * len(batch_x)
                 
             scheduler.step()
-            train_loss /= len(train_ds)
-            train_l1 /= len(train_ds)
-            train_poisson /= len(train_ds)
+            train_loss     /= len(train_ds)
+            train_centroid /= len(train_ds)
+            train_l1       /= len(train_ds)
+            train_poisson  /= len(train_ds)
             
             if epoch == start_epoch or epoch % checkpoint_every == 0:
-                alpha_nll = 0.05
                 print(
                     f"[Epoch {epoch:03d}] Loss: {train_loss:.4f} "
-                    f"| L1: {train_l1:.4f} (weighted: {train_l1:.4f}) "
-                    f"| Poisson: {train_poisson:.4f} (weighted: {alpha_nll * train_poisson:.4f})"
+                    f"| centroid: {train_centroid:.4f} (w: {0.6*train_centroid:.4f}) "
+                    f"| L1: {train_l1:.4f} (w: {0.3*train_l1:.4f}) "
+                    f"| Poisson: {train_poisson:.4f} (w: {0.1*train_poisson:.4f})"
                 )
             
             # Save latest checkpoint every epoch
