@@ -50,6 +50,13 @@ for name in ["raw", "savgol", "binning", "spatial_gauss", "pca", "nmf", "referen
         "tuned_params": params
     }
 
+table["_meta"] = {
+    "test_indices": [6, 7, 8, 9, 10, 11],
+    "train_indices": [0, 1, 2, 3, 4, 5],
+    "exposure_s": EXPOSURE,
+    "reference_exposure_s": 5.0
+}
+
 import pathlib
 out = pathlib.Path("evidence/baselines.json")
 out.parent.mkdir(parents=True, exist_ok=True)
