@@ -242,8 +242,9 @@ if TORCH_AVAILABLE:
                 bg = pred_hw_c.min(dim=-1, keepdim=True).values
                 pred_sub = pred_hw_c - bg                       # (B, H, W, C)
                 
-                # Soft-argmax with temperature=1 (raw predicted counts)
-                weights = torch.softmax(pred_sub, dim=-1)       # (B, H, W, C)
+                # Linear center of mass on baseline-subtracted counts
+                norm = torch.clamp(pred_sub.sum(dim=-1, keepdim=True), min=1e-6)
+                weights = pred_sub / norm
                 axis_exp = axis[:, None, None, :]               # (B, 1, 1, C)
                 centroid = (weights * axis_exp).sum(dim=-1)     # (B, H, W)
                 
