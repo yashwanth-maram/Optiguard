@@ -1,8 +1,8 @@
 __pycache__/
 *.egg-info/
 .venv/
-data/
-runs/
+/data/
+/runs/
 *.h5
 *.zarr
 *.pt
