@@ -1,0 +1,39 @@
+# Tier A synthetic map generator - THE dataset for Steps 4-8.
+seed: 20260806
+
+detector:
+  gain_e_per_adu: 2.4        # electrons per ADU
+  read_noise_e: 4.0          # RMS electrons per readout
+  dark_rate_e_per_s: 0.02
+  well_depth_e: 100000
+  dispersion_cm1_per_px: 0.55
+  n_channels: 1024
+
+acquisition:
+  reference_integration_s: 5.0   # long "ground truth" exposure T
+  target_integration_s: [0.1, 0.25, 0.5, 1.0]   # short exposures t to thin down to
+  accumulations: 1
+
+map:
+  shape: [64, 64]            # start small; scale to 128x128 once Step 6 passes
+  material: silicon
+
+silicon:
+  peak_cm1: 520.7
+  fwhm_cm1: 3.5
+  peak_photons_per_s: 4000   # signal rate at reference conditions
+
+stress_field:
+  kind: smooth_gradient      # smooth_gradient | grain | radial
+  shift_range_cm1: [-1.2, 0.8]
+
+defects:
+  count: [3, 8]
+  radius_px: [1, 3]
+  difficulty_crlb: [0.3, 12.0]          # log-uniform, THE parameter
+  difficulty_reference_exposure_s: 0.25
+  fwhm_scale: [1.0, 1.0]
+
+background:
+  fluorescence_slope: [0.0, 400.0]   # photons/s across the window
+  cosmic_ray_rate_per_spectrum: 0.002

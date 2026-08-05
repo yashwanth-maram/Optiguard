@@ -1,0 +1,33 @@
+[project]
+name = "optiguard"
+version = "0.1.0"
+description = "Photon-budget measurement assurance for spectroscopic inspection"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyyaml>=6.0",
+    "h5py>=3.10",
+    "scikit-image>=0.22",
+    "pybaselines>=1.1",
+    "scikit-learn>=1.3",
+]
+
+[project.optional-dependencies]
+train = ["torch>=2.2", "tqdm"]
+serve = ["fastapi", "uvicorn", "pydantic>=2", "streamlit", "plotly"]
+dev   = ["pytest", "pytest-cov", "ruff", "mypy"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: statistical tests with many realisations"]
+
+[tool.ruff]
+line-length = 100

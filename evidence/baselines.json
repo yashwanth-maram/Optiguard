@@ -1,0 +1,146 @@
+{
+  "raw": {
+    "rmse_center_cm1": 0.043846781313924485,
+    "mae_center_cm1": 0.03499287685743599,
+    "median_center_cm1": 0.029561748201899718,
+    "mae_fwhm_cm1": 0.09056006853063236,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 1.0024520380091093,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.345,
+      "1.5": 0.7192982456140351,
+      "2.5": 0.7647058823529411,
+      "4.0": 1.0,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.0031441337084229686,
+    "effective_exposure_gain": 0.9860078183812412,
+    "tuned_params": {}
+  },
+  "savgol": {
+    "rmse_center_cm1": 0.04383273119391618,
+    "mae_center_cm1": 0.03497633763493441,
+    "median_center_cm1": 0.029558454241055188,
+    "mae_fwhm_cm1": 0.09040943435657582,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 1.0021308155381654,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.345,
+      "1.5": 0.7368421052631579,
+      "2.5": 0.7647058823529411,
+      "4.0": 1.0,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.0029372828065530364,
+    "effective_exposure_gain": 0.9866247794268658,
+    "tuned_params": {
+      "window_length": 5,
+      "polyorder": 2
+    }
+  },
+  "binning": {
+    "rmse_center_cm1": 0.010894024609286694,
+    "mae_center_cm1": 0.00719488722920531,
+    "median_center_cm1": 0.0050304594493582044,
+    "mae_fwhm_cm1": 0.02619594840563115,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 0.24906587996762997,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.0,
+      "1.5": 0.0,
+      "2.5": 0.11764705882352941,
+      "4.0": 0.7066666666666667,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.0,
+    "effective_exposure_gain": 14.935327698488242,
+    "tuned_params": {
+      "size": 7
+    }
+  },
+  "spatial_gauss": {
+    "rmse_center_cm1": 0.010263667678689739,
+    "mae_center_cm1": 0.0068755898787358095,
+    "median_center_cm1": 0.004877580915149338,
+    "mae_fwhm_cm1": 0.024703823867152704,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 0.2346542727569221,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.0,
+      "1.5": 0.0,
+      "2.5": 0.4117647058823529,
+      "4.0": 0.7333333333333333,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.0,
+    "effective_exposure_gain": 16.777913163943193,
+    "tuned_params": {
+      "sigma": 2.0
+    }
+  },
+  "pca": {
+    "rmse_center_cm1": 0.044280345884997,
+    "mae_center_cm1": 0.03534936725825106,
+    "median_center_cm1": 0.02996303013395618,
+    "mae_fwhm_cm1": 0.08614549020574362,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 1.0123644574582915,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.385,
+      "1.5": 0.7368421052631579,
+      "2.5": 0.6470588235294118,
+      "4.0": 1.0,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.003185503888796955,
+    "effective_exposure_gain": 0.9672525146568334,
+    "tuned_params": {
+      "n_components": 16
+    }
+  },
+  "nmf": {
+    "rmse_center_cm1": 0.04430311852701629,
+    "mae_center_cm1": 0.03537333062998398,
+    "median_center_cm1": 0.029952857607895567,
+    "mae_fwhm_cm1": 0.08537439789654462,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 1.0128850995834144,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.385,
+      "1.5": 0.7543859649122807,
+      "2.5": 0.6470588235294118,
+      "4.0": 1.0,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.0033096144299189145,
+    "effective_exposure_gain": 0.9662823568522757,
+    "tuned_params": {
+      "n_components": 16
+    }
+  },
+  "reference": {
+    "rmse_center_cm1": 0.0059056296684026335,
+    "mae_center_cm1": 0.0047123366171580895,
+    "median_center_cm1": 0.0039764888703075485,
+    "mae_fwhm_cm1": 0.012163358345817655,
+    "mean_crlb_cm1": 0.04373953032307173,
+    "rmse_over_crlb": 0.13501813176278055,
+    "convergence_rate": 1.0,
+    "recall_by_difficulty": {
+      "0.5": 0.92,
+      "1.5": 1.0,
+      "2.5": 1.0,
+      "4.0": 1.0,
+      "10.0": 1.0
+    },
+    "false_feature_rate": 0.002771802085057091,
+    "effective_exposure_gain": 49.3440525653218,
+    "tuned_params": {}
+  }
+}
