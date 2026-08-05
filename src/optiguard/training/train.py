@@ -62,13 +62,18 @@ if TORCH_AVAILABLE:
     def evaluate_model_on_harness(model, val_samples: list, in_channels: int = 128, exposure: float = 0.1):
         """Runs full OptiGuard evaluation harness on validation/test samples."""
         from optiguard.eval.harness import evaluate
+        from optiguard.eval.baselines import fit_map, _nominal
         
         device = next(model.parameters()).device
         model.eval()
         
-        def model_method(short_counts: np.ndarray, meta: Dict[str, Any], axis: np.ndarray) -> np.ndarray:
+        def model_method(sample, exposure, **kwargs):
+            short_counts = sample.short_counts[exposure]
+            axis = sample.axis
+            meta = sample.meta
+
             H, W, C = short_counts.shape
-            peak_nominal = float(meta.get("peak_cm1", 520.7))
+            peak_nominal = _nominal(sample)
             peak_idx = int(np.argmin(np.abs(axis - peak_nominal)))
             w_start = max(0, peak_idx - in_channels // 2)
             w_end = min(C, peak_idx + in_channels // 2)
@@ -89,7 +94,8 @@ if TORCH_AVAILABLE:
                 
             restored = np.copy(short_counts).astype(np.float64)
             restored[:, :, w_start:w_end] = out_np[:, :, :act_c]
-            return restored
+            
+            return fit_map(axis, restored, meta.get("read_noise_e", 0.0), peak_nominal)
 
         res = evaluate(model_method, val_samples, exposure=exposure)
         return res
@@ -210,19 +216,33 @@ if TORCH_AVAILABLE:
         for epoch in range(start_epoch, epochs + 1):
             model.train()
             train_loss = 0.0
+            train_l1 = 0.0
+            train_poisson = 0.0
             for batch_x, batch_y in train_loader:
                 batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 
                 optimizer.zero_grad()
                 pred = model(batch_x)
-                loss = criterion(pred, batch_y, batch_x)
+                
+                l1 = torch.nn.functional.l1_loss(pred, batch_y)
+                mu = torch.clamp(pred, min=1e-6)
+                poisson = torch.mean(mu - batch_x * torch.log(mu))
+                loss = l1 + 0.05 * poisson # alpha_nll = 0.05
+                
                 loss.backward()
                 optimizer.step()
                 
                 train_loss += loss.item() * len(batch_x)
+                train_l1 += l1.item() * len(batch_x)
+                train_poisson += poisson.item() * len(batch_x)
                 
             scheduler.step()
             train_loss /= len(train_ds)
+            train_l1 /= len(train_ds)
+            train_poisson /= len(train_ds)
+            
+            if epoch == start_epoch or epoch % checkpoint_every == 0:
+                print(f"[Epoch {epoch:03d}] Loss: {train_loss:.4f} (L1: {train_l1:.4f}, Poisson: {train_poisson:.4f})")
             
             # Save latest checkpoint every epoch
             torch.save({
@@ -238,9 +258,46 @@ if TORCH_AVAILABLE:
                 print(f"\n[Epoch {epoch:03d}/{epochs:03d}] Running Validation Harness...")
                 val_res = evaluate_model_on_harness(model, val_samples, in_channels=in_channels, exposure=exposure)
                 
-                gain = float(val_res.effective_exposure_gain)
+                from optiguard.eval.harness import effective_exposure_gain
+                
+                def model_method_for_gain(sample, exp, **kwargs):
+                    from optiguard.eval.baselines import fit_map, _nominal
+                    short_counts = sample.short_counts[exp]
+                    axis = sample.axis
+                    meta = sample.meta
+        
+                    H, W, C = short_counts.shape
+                    peak_nominal = _nominal(sample)
+                    peak_idx = int(np.argmin(np.abs(axis - peak_nominal)))
+                    w_start = max(0, peak_idx - in_channels // 2)
+                    w_end = min(C, peak_idx + in_channels // 2)
+                    
+                    cropped = short_counts[:, :, w_start:w_end]
+                    act_c = cropped.shape[2]
+                    
+                    if act_c != in_channels:
+                        padded = np.zeros((H, W, in_channels), dtype=np.float32)
+                        padded[:, :, :act_c] = cropped
+                        inp_t = torch.from_numpy(padded.transpose(2, 0, 1)).unsqueeze(0).to(device)
+                    else:
+                        inp_t = torch.from_numpy(cropped.transpose(2, 0, 1).astype(np.float32)).unsqueeze(0).to(device)
+                        
+                    with torch.no_grad():
+                        out_t = model(inp_t)
+                        out_np = out_t.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+                        
+                    restored = np.copy(short_counts).astype(np.float64)
+                    restored[:, :, w_start:w_end] = out_np[:, :, :act_c]
+                    
+                    return fit_map(axis, restored, meta.get("read_noise_e", 0.0), peak_nominal)
+
+                gain = effective_exposure_gain(model_method_for_gain, val_samples, exposure=exposure)
+                if gain is None:
+                    gain = 1.0
+                gain = float(gain)
+                
                 rec_1p5 = float(val_res.recall_by_difficulty.get(1.5, 0.0))
-                rmse = float(val_res.rmse_center_cm1)
+                rmse = float(val_res.rmse_center)
                 
                 metric_entry = {
                     "epoch": epoch,
@@ -281,16 +338,16 @@ if TORCH_AVAILABLE:
                     # Write formatted network_row.json
                     best_result_dict = {
                         "network_v1": {
-                            "rmse_center_cm1": float(val_res.rmse_center_cm1),
-                            "mae_center_cm1": float(val_res.mae_center_cm1),
-                            "median_center_cm1": float(val_res.median_center_cm1),
-                            "mae_fwhm_cm1": float(val_res.mae_fwhm_cm1),
-                            "mean_crlb_cm1": float(val_res.mean_crlb_cm1),
+                            "rmse_center_cm1": float(val_res.rmse_center),
+                            "mae_center_cm1": float(val_res.mae_center),
+                            "median_center_cm1": float(val_res.median_center),
+                            "mae_fwhm_cm1": float(val_res.mae_fwhm),
+                            "mean_crlb_cm1": float(val_res.mean_crlb),
                             "rmse_over_crlb": float(val_res.rmse_over_crlb),
                             "convergence_rate": float(val_res.convergence_rate),
                             "recall_by_difficulty": {str(k): float(v) for k, v in val_res.recall_by_difficulty.items()},
                             "false_feature_rate": float(val_res.false_feature_rate),
-                            "effective_exposure_gain": float(val_res.effective_exposure_gain),
+                            "effective_exposure_gain": float(gain),
                             "tuned_params": {
                                 "model": "SpatialSpectralUNet",
                                 "depth": m_cfg.get("depth", 2),

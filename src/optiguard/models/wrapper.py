@@ -51,12 +51,12 @@ def load_restoration_method(checkpoint_path: str, config_path: Optional[str] = N
     model.load_state_dict(state_dict)
     model.eval()
 
-    def restoration_method(short_counts: np.ndarray, meta: Dict[str, Any], axis: np.ndarray) -> np.ndarray:
+    def restoration_method(sample, exposure, **kwargs) -> np.ndarray:
         """
-        Inference function for a single 3D datacube (H, W, C).
+        Inference function for a full sample matching the harness baseline signature.
         """
         H, W, C = short_counts.shape
-        peak_nominal = float(meta.get("peak_cm1", 520.7))
+        peak_nominal = _nominal(sample)
         
         peak_idx = int(np.argmin(np.abs(axis - peak_nominal)))
         w_start = max(0, peak_idx - in_channels // 2)
@@ -82,6 +82,6 @@ def load_restoration_method(checkpoint_path: str, config_path: Optional[str] = N
         restored = np.copy(short_counts).astype(np.float64)
         restored[:, :, w_start:w_end] = out_np[:, :, :actual_channels]
         
-        return restored
+        return fit_map(axis, restored, meta.get("read_noise_e", 0.0), peak_nominal)
 
     return restoration_method
