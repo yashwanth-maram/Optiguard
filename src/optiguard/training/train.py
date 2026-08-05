@@ -1,128 +1,261 @@
 """
-Step 8: Training pipeline for Deep Spectral Denoising Network on Synthetic Raman Hyperspectral Maps.
-Can run locally with CPU/GPU or directly in Google Colab.
+Training pipeline for OptiGuard Neural Restoration Models.
+Step 8: Constrained-Gain Model Selection with Validation Every N Epochs.
+
+Usage:
+    python src/optiguard/training/train.py \
+        --config configs/restoration_v1.yaml \
+        --data data/corpus \
+        --out runs/restoration_v1 \
+        --select-on constrained_gain \
+        --recall-floor 0.65 \
+        --checkpoint-every 5
 """
 import os
 import sys
 import argparse
+import json
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 import numpy as np
+import yaml
 
-from optiguard.data.simulator import MapSimulator
-from optiguard.models.denoiser import SpectralDenoiser, PoissonGaussianLoss, TORCH_AVAILABLE
+# Ensure src is in sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from optiguard.models.spatial_spectral import SpatialSpectralUNet, SpatialPoissonLoss, TORCH_AVAILABLE
 
 if TORCH_AVAILABLE:
     import torch
     from torch.utils.data import Dataset, DataLoader
     import torch.optim as optim
 
-    class SyntheticSpectralDataset(Dataset):
-        """Generates paired (short_counts, clean_rate) spectra on the fly."""
-        def __init__(self, simulator: MapSimulator, num_maps: int = 20, exposure: float = 0.1, crop_channels: int = 128):
-            self.sim = simulator
-            self.exposure = exposure
-            self.crop_channels = crop_channels
-            
-            # Pre-generate maps for fast iteration
-            self.inputs = []
-            self.targets = []
-            
-            for i in range(num_maps):
-                s = self.sim.generate(index=i)
-                counts = s.short_counts[exposure] # (H, W, C)
-                clean = s.clean_rate * exposure    # Expected clean counts
+    class CorpusDataset(Dataset):
+        """Loads pre-generated synthetic hyperspectral datacubes from disk."""
+        def __init__(self, data_dir: str, split_indices: Optional[List[int]] = None):
+            self.data_path = Path(data_dir)
+            all_files = sorted(list(self.data_path.glob("sample_*.npz")))
+            if not all_files:
+                raise FileNotFoundError(f"No sample_*.npz files found in {data_dir}")
                 
-                # Crop around nominal peak center
-                peak_idx = int(np.argmin(np.abs(s.axis - float(s.meta["peak_cm1"]))))
-                w_start = max(0, peak_idx - crop_channels // 2)
-                w_end = min(counts.shape[2], peak_idx + crop_channels // 2)
+            if split_indices is not None:
+                self.files = [all_files[i] for i in split_indices if i < len(all_files)]
+            else:
+                self.files = all_files
                 
-                counts_c = counts[:, :, w_start:w_end]
-                clean_c = clean[:, :, w_start:w_end]
-                
-                # Reshape to (N, 1, crop_channels)
-                H, W, C = counts_c.shape
-                self.inputs.append(counts_c.reshape(-1, 1, C).astype(np.float32))
-                self.targets.append(clean_c.reshape(-1, 1, C).astype(np.float32))
-                
-            self.inputs = np.concatenate(self.inputs, axis=0)
-            self.targets = np.concatenate(self.targets, axis=0)
-
         def __len__(self):
-            return len(self.inputs)
+            return len(self.files)
 
         def __getitem__(self, idx):
-            return torch.from_numpy(self.inputs[idx]), torch.from_numpy(self.targets[idx])
+            data = np.load(self.files[idx])
+            short = data["short_counts"]           # (H, W, C)
+            clean = data["clean_rate"] * float(data["exposure"]) # Expected photon count (H, W, C)
+            
+            # Transpose to PyTorch (C, H, W)
+            x = torch.from_numpy(short.transpose(2, 0, 1).astype(np.float32))
+            y = torch.from_numpy(clean.transpose(2, 0, 1).astype(np.float32))
+            return x, y
 
 
-    def train_denoiser(
-        config_path: str = "configs/simulator.yaml",
-        epochs: int = 10,
-        batch_size: int = 128,
-        lr: float = 1e-3,
-        save_path: str = "runs/spectral_denoiser.pt"
+    def evaluate_model_on_harness(model, val_samples: list, in_channels: int = 128, exposure: float = 0.1):
+        """Runs full OptiGuard evaluation harness on validation samples."""
+        from optiguard.eval.harness import evaluate
+        
+        device = next(model.parameters()).device
+        model.eval()
+        
+        def model_method(short_counts: np.ndarray, meta: Dict[str, Any], axis: np.ndarray) -> np.ndarray:
+            H, W, C = short_counts.shape
+            peak_nominal = float(meta.get("peak_cm1", 520.7))
+            peak_idx = int(np.argmin(np.abs(axis - peak_nominal)))
+            w_start = max(0, peak_idx - in_channels // 2)
+            w_end = min(C, peak_idx + in_channels // 2)
+            
+            cropped = short_counts[:, :, w_start:w_end]
+            act_c = cropped.shape[2]
+            
+            if act_c != in_channels:
+                padded = np.zeros((H, W, in_channels), dtype=np.float32)
+                padded[:, :, :act_c] = cropped
+                inp_t = torch.from_numpy(padded.transpose(2, 0, 1)).unsqueeze(0).to(device)
+            else:
+                inp_t = torch.from_numpy(cropped.transpose(2, 0, 1).astype(np.float32)).unsqueeze(0).to(device)
+                
+            with torch.no_grad():
+                out_t = model(inp_t)
+                out_np = out_t.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+                
+            restored = np.copy(short_counts).astype(np.float64)
+            restored[:, :, w_start:w_end] = out_np[:, :, :act_c]
+            return restored
+
+        res = evaluate(model_method, val_samples, exposure=exposure)
+        return res
+
+
+    def train(
+        config_path: str,
+        data_dir: str,
+        out_dir: str,
+        select_on: str = "constrained_gain",
+        recall_floor: float = 0.65,
+        checkpoint_every: int = 5,
+        resume: Optional[str] = None
     ):
+        out_path = Path(out_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        
+        # Load configuration
+        with open(config_path, "r") as f:
+            cfg = yaml.safe_load(f)
+            
+        m_cfg = cfg.get("model", {})
+        t_cfg = cfg.get("training", {})
+        
+        in_channels = m_cfg.get("in_channels", 128)
+        epochs = t_cfg.get("epochs", 50)
+        batch_size = t_cfg.get("batch_size", 8)
+        lr = t_cfg.get("lr", 0.0005)
+        weight_decay = t_cfg.get("weight_decay", 0.0001)
+        exposure = float(t_cfg.get("exposure_s", 0.1))
+        
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {device}")
+        print(f"OptiGuard Training: Device={device}, Epochs={epochs}, BatchSize={batch_size}")
         
-        os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
-        sim = MapSimulator.from_yaml(config_path)
+        # Dataset setup
+        dataset = CorpusDataset(data_dir)
+        n_total = len(dataset)
+        n_val = max(6, int(n_total * 0.1))
+        n_train = n_total - n_val
         
-        print("Synthesizing training and validation datasets...")
-        train_dataset = SyntheticSpectralDataset(sim, num_maps=10, exposure=0.1)
-        val_dataset = SyntheticSpectralDataset(sim, num_maps=2, exposure=0.1)
+        train_indices = list(range(n_train))
+        val_indices = list(range(n_train, n_total))
         
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        train_ds = CorpusDataset(data_dir, split_indices=train_indices)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
         
-        model = SpectralDenoiser(in_channels=1, hidden_dim=64, num_blocks=6).to(device)
-        criterion = PoissonGaussianLoss(read_noise_e=4.0)
-        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        print(f"Loaded corpus from {data_dir}: {n_train} train cubes, {n_val} validation cubes")
         
-        print(f"Starting training for {epochs} epochs...")
+        # Prepare validation samples for harness evaluation
+        from optiguard.data.simulator import MapSimulator
+        sim = MapSimulator.from_yaml("configs/simulator.yaml")
+        # Load validation samples directly for evaluation harness
+        val_samples = [sim.generate(index=i) for i in range(6, 12)]
+        
+        # Model, Loss, Optimizer
+        model = SpatialSpectralUNet(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            base_channels=m_cfg.get("base_channels", 64),
+            depth=m_cfg.get("depth", 2),
+            dropout=m_cfg.get("dropout", 0.05)
+        ).to(device)
+        
+        if resume and Path(resume).exists():
+            print(f"Resuming checkpoint from {resume}")
+            model.load_state_dict(torch.load(resume, map_location=device))
+            
+        criterion = SpatialPoissonLoss(alpha_nll=0.05)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
+        
+        best_pt_path = out_path / "best.pt"
+        metrics_file = out_path / "metrics.jsonl"
+        
+        best_score = -float("inf")
+        
         for epoch in range(1, epochs + 1):
             model.train()
             train_loss = 0.0
-            for batch_in, batch_target in train_loader:
-                batch_in, batch_target = batch_in.to(device), batch_target.to(device)
+            for batch_x, batch_y in train_loader:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
                 
                 optimizer.zero_grad()
-                pred_mean, _ = model(batch_in)
-                loss = criterion(pred_mean, batch_target, batch_in)
+                pred = model(batch_x)
+                loss = criterion(pred, batch_y, batch_x)
                 loss.backward()
                 optimizer.step()
                 
-                train_loss += loss.item() * len(batch_in)
+                train_loss += loss.item() * len(batch_x)
                 
             scheduler.step()
-            train_loss /= len(train_dataset)
+            train_loss /= len(train_ds)
             
-            # Validation
-            model.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for val_in, val_target in val_loader:
-                    val_in, val_target = val_in.to(device), val_target.to(device)
-                    pred_mean, _ = model(val_in)
-                    val_loss += criterion(pred_mean, val_target, val_in).item() * len(val_in)
-            val_loss /= len(val_dataset)
-            
-            print(f"Epoch {epoch:02d}/{epochs:02d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-            
-        torch.save(model.state_dict(), save_path)
-        print(f"\nModel saved successfully to {save_path}")
+            # Validation step
+            if epoch % checkpoint_every == 0 or epoch == epochs:
+                print(f"\n[Epoch {epoch:03d}/{epochs:03d}] Running Validation Harness...")
+                val_res = evaluate_model_on_harness(model, val_samples, in_channels=in_channels, exposure=exposure)
+                
+                gain = float(val_res.effective_exposure_gain)
+                rec_1p5 = float(val_res.recall_by_difficulty.get(1.5, 0.0))
+                rmse = float(val_res.rmse_center_cm1)
+                
+                metric_entry = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "effective_exposure_gain": gain,
+                    "recall_1p5": rec_1p5,
+                    "rmse_center_cm1": rmse,
+                    "false_feature_rate": float(val_res.false_feature_rate),
+                    "recalls": {str(k): float(v) for k, v in val_res.recall_by_difficulty.items()}
+                }
+                
+                with open(metrics_file, "a") as f:
+                    f.write(json.dumps(metric_entry) + "\n")
+                    
+                print(f"  Train Loss: {train_loss:.4f} | Gain: {gain:.2f}x | Recall @ 1.5 CRLB: {rec_1p5*100:.1f}% | RMSE: {rmse:.4f} cm^-1")
+                
+                # Selection logic: Constrained-Gain
+                is_best = False
+                if select_on == "constrained_gain":
+                    if rec_1p5 >= recall_floor:
+                        if gain > best_score:
+                            best_score = gain
+                            is_best = True
+                    elif best_score == -float("inf") and rec_1p5 > 0.0:
+                        # Fallback if no model yet hits recall floor
+                        best_score = -100.0 + rec_1p5
+                        is_best = True
+                else: # Default MAE/RMSE minimization
+                    score = -rmse
+                    if score > best_score:
+                        best_score = score
+                        is_best = True
+                        
+                if is_best:
+                    print(f"  >>> New BEST checkpoint saved (Score = {best_score:.2f}) -> {best_pt_path}")
+                    torch.save(model.state_dict(), best_pt_path)
+            else:
+                print(f"Epoch {epoch:03d}/{epochs:03d} | Train Loss: {train_loss:.4f}")
+                
+        print(f"\nTraining completed! Best model saved to {best_pt_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train OptiGuard Neural Restoration Model.")
+    parser.add_argument("--config", type=str, default="configs/restoration_v1.yaml", help="Path to config YAML")
+    parser.add_argument("--data", type=str, default="data/corpus", help="Path to pre-generated corpus directory")
+    parser.add_argument("--out", type=str, default="runs/restoration_v1", help="Output directory for checkpoints")
+    parser.add_argument("--select-on", type=str, default="constrained_gain", help="Selection metric")
+    parser.add_argument("--recall-floor", type=float, default=0.65, help="Recall threshold at 1.5 CRLB")
+    parser.add_argument("--checkpoint-every", type=int, default=5, help="Validation frequency in epochs")
+    parser.add_argument("--resume", type=str, default=None, help="Resume checkpoint path")
+    args = parser.parse_args()
+
+    if not TORCH_AVAILABLE:
+        print("ERROR: PyTorch is required for training. Install with: pip install torch")
+        sys.exit(1)
+
+    train(
+        config_path=args.config,
+        data_dir=args.data,
+        out_dir=args.out,
+        select_on=args.select_on,
+        recall_floor=args.recall_floor,
+        checkpoint_every=args.checkpoint_every,
+        resume=args.resume
+    )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--save-path", type=str, default="runs/spectral_denoiser.pt")
-    args = parser.parse_args()
-
-    if TORCH_AVAILABLE:
-        train_denoiser(epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, save_path=args.save_path)
-    else:
-        print("PyTorch is required for Step 8 neural network training.")
+    main()

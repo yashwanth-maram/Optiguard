@@ -142,5 +142,11 @@
     "false_feature_rate": 0.002771802085057091,
     "effective_exposure_gain": 49.3440525653218,
     "tuned_params": {}
+  },
+  "_meta": {
+    "test_indices": [6, 7, 8, 9, 10, 11],
+    "train_indices": [0, 1, 2, 3, 4, 5],
+    "exposure_s": 0.1,
+    "reference_exposure_s": 5.0
   }
 }
