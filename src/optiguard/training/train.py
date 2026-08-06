@@ -262,15 +262,35 @@ if TORCH_AVAILABLE:
                 
                 if epoch > 1 and batch_idx == 0:
                     # Dynamically probe N_eff once per epoch to set the relative threshold
+                    # Temporarily freeze model to save compute and avoid accumulating gradients
+                    for p in model.parameters():
+                        p.requires_grad_(False)
+                        
                     inp_probe = short_counts[0:1].clone().detach().requires_grad_(True)
                     out_probe = model(inp_probe)
-                    cy, cx = out_probe.shape[2] // 2, out_probe.shape[3] // 2
-                    val_sum = out_probe[0, :, cy, cx].sum()
-                    grad = torch.autograd.grad(val_sum, inp_probe, retain_graph=False)[0]
-                    spatial_grad = grad[0].sum(dim=0).abs()
-                    sum_w = spatial_grad.sum().item()
-                    sum_sq = (spatial_grad ** 2).sum().item()
-                    current_neff = (sum_w ** 2) / sum_sq if sum_sq > 0 else 1.0
+                    
+                    import random
+                    neffs = []
+                    H, W = out_probe.shape[2], out_probe.shape[3]
+                    for i in range(25):
+                        cy = random.randint(10, H - 11)
+                        cx = random.randint(10, W - 11)
+                        val_sum = out_probe[0, :, cy, cx].sum()
+                        
+                        # Retain graph for all but the last iteration
+                        is_last = (i == 24)
+                        grad = torch.autograd.grad(val_sum, inp_probe, retain_graph=not is_last)[0]
+                        spatial_grad = grad[0].sum(dim=0).abs()
+                        
+                        sum_w = spatial_grad.sum().item()
+                        sum_sq = (spatial_grad ** 2).sum().item()
+                        neffs.append((sum_w ** 2) / sum_sq if sum_sq > 0 else 1.0)
+                        
+                    current_neff = float(torch.tensor(neffs).median().item())
+                    
+                    # Unfreeze model
+                    for p in model.parameters():
+                        p.requires_grad_(True)
                     
                     # A genuine spatial denoiser's floor is ~1/sqrt(N_eff) CRLB.
                     # We trigger if it beats this theoretical limit by more than 25%.
