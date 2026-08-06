@@ -49,21 +49,26 @@ class MapSimulator:
             config = yaml.safe_load(f)
         return cls(config)
 
-    def generate(self, index: int, field: str = None, cosmic_rays: bool = False) -> Sample:
+    def generate(self, index: int, field: str = None, cosmic_rays: bool = False,
+                 exposure: float = None, material: str = None) -> Sample:
         seed = self.config["seed"] + index
         rng = np.random.default_rng(seed)
         
         H, W = self.config["map"]["shape"]
-        mat_conf = self.config[self.config["map"]["material"]]
+        mat_name = material if material else self.config["map"]["material"]
+        mat_conf = self.config["materials"][mat_name]
+        peaks = mat_conf["peaks"]
+        primary_peak = peaks[0]
+        
         det_conf = self.config["detector"]
         acq_conf = self.config["acquisition"]
         
-        # Axis
+        # Axis (always anchored to the nominal instrument center, e.g. silicon)
         C = det_conf["n_channels"]
         disp = det_conf["dispersion_cm1_per_px"]
-        center_cm1 = mat_conf["peak_cm1"]
+        instrument_center = self.config["materials"]["silicon"]["peaks"][0]["center"]
         axis = np.arange(C, dtype=np.float32) * disp
-        axis = axis - axis.mean() + center_cm1
+        axis = axis - axis.mean() + instrument_center
         
         # Stress field
         if field is None:
@@ -80,14 +85,15 @@ class MapSimulator:
             
         # Background
         # The fitter assumes constant background so we generate constant background
-        # We use the mean of the fluorescence_slope to ensure enough noise for the difficulty test
         bg_val = np.mean(self.config["background"]["fluorescence_slope"])
         bg = np.full((H, W), bg_val, dtype=np.float32)
         
+        base_amp = self.config["map"]["peak_photons_per_s"]
+        
         theta_true = {
-            "center": np.full((H, W), center_cm1, dtype=np.float32) + stress,
-            "fwhm": np.full((H, W), mat_conf["fwhm_cm1"], dtype=np.float32),
-            "amplitude": np.full((H, W), mat_conf["peak_photons_per_s"], dtype=np.float32),
+            "center": np.full((H, W), primary_peak["center"], dtype=np.float32) + stress,
+            "fwhm": np.full((H, W), primary_peak["fwhm"], dtype=np.float32),
+            "amplitude": np.full((H, W), base_amp * primary_peak["rel_amplitude"], dtype=np.float32),
             "background": bg
         }
         
@@ -135,9 +141,25 @@ class MapSimulator:
             
         # Rate (lambda)
         rate = np.zeros((H, W, C), dtype=np.float32)
+        
+        # Reference FWHM used to define the base photon budget
+        ref_fwhm = self.config["materials"]["silicon"]["peaks"][0]["fwhm"]
+        
+        for p in peaks:
+            # Conserve total integrated photons: peak height scales by (ref_fwhm / p_fwhm)
+            p_amp = base_amp * p["rel_amplitude"] * (ref_fwhm / p["fwhm"])
+            for i in range(H):
+                for j in range(W):
+                    # FWHM scales proportionally with the primary peak's defect fwhm scaling
+                    p_fwhm = p["fwhm"] * (theta_true["fwhm"][i, j] / primary_peak["fwhm"])
+                    # Center shifts exactly by the local stress field
+                    p_center = p["center"] + (theta_true["center"][i, j] - primary_peak["center"])
+                    rate[i, j] += lorentzian(axis, p_center, p_fwhm, p_amp)
+                    
+        # Add background once
         for i in range(H):
             for j in range(W):
-                rate[i, j] = lorentzian(axis, theta_true["center"][i, j], theta_true["fwhm"][i, j], theta_true["amplitude"][i, j]) + theta_true["background"][i, j]
+                rate[i, j] += theta_true["background"][i, j]
                 
         T = acq_conf["reference_integration_s"]
         
@@ -148,7 +170,8 @@ class MapSimulator:
         long_counts = (long_signal + long_dark + long_read).astype(np.int32)
         
         short_counts = {}
-        for t in self.exposures:
+        target_exposures = [exposure] if exposure is not None else self.exposures
+        for t in target_exposures:
             short_signal = thin_counts(long_signal, t, T, rng)
             short_dark = rng.poisson(det_conf["dark_rate_e_per_s"] * t, size=(H, W, C))
             short_read = rng.normal(0, det_conf["read_noise_e"], size=(H, W, C))
@@ -163,11 +186,19 @@ class MapSimulator:
                     
             short_counts[t] = arr
             
+        # Optional one-shot extra exposure (for closed-loop planner test)
+        if exposure is not None and exposure not in short_counts:
+            t_extra = float(exposure)
+            short_signal_e = thin_counts(long_signal, t_extra, T, rng)
+            short_dark_e = rng.poisson(det_conf["dark_rate_e_per_s"] * t_extra, size=(H, W, C))
+            short_read_e = rng.normal(0, det_conf["read_noise_e"], size=(H, W, C))
+            short_counts[t_extra] = (short_signal_e + short_dark_e + short_read_e).astype(np.int32)
+            
         meta = {
             "shape": (H, W),
             "reference_integration_s": T,
             "read_noise_e": det_conf["read_noise_e"],
-            "peak_cm1": float(center_cm1)        # physics anchor, not axis geometry
+            "peak_cm1": float(instrument_center)        # physics anchor, not axis geometry
         }
         
         return Sample(

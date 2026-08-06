@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OptiGuard — Operator Console</title>
+  <meta name="description" content="Photon-budget measurement assurance for spectroscopic inspection. Certifies which pixel measurements are physically supported by the collected photons.">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ═══════════════════════ HEADER BAR ═══════════════════════ -->
+<header class="topbar" role="banner">
+  <div class="topbar-brand">
+    <span class="brand-name">OPTIGUARD</span>
+    <span class="topbar-divider" aria-hidden="true">|</span>
+    <span class="topbar-meta" id="scan-meta">Si wafer · 64×64 · 0.10 s/pt · 532 nm</span>
+  </div>
+  <div class="topbar-controls">
+    <label class="dither-toggle" for="dither-check">
+      <input type="checkbox" id="dither-check" checked>
+      <span class="toggle-label">Uncertainty dither</span>
+    </label>
+    <div class="control-group-inline">
+      <select id="material-select" class="ctrl-select" aria-label="Material"></select>
+      <select id="exposure-select" class="ctrl-select" aria-label="Exposure">
+        <option value="0.1">0.10 s</option>
+        <option value="0.25">0.25 s</option>
+        <option value="0.5">0.50 s</option>
+        <option value="1.0">1.00 s</option>
+      </select>
+      <input type="number" id="index-input" class="ctrl-input" value="6" min="0" max="20" aria-label="Map index" title="Map index">
+    </div>
+    <button id="scan-btn" class="reacquire-btn" aria-live="polite">
+      <span class="btn-label">REACQUIRE</span>
+      <span class="btn-spinner hidden" aria-hidden="true"></span>
+    </button>
+  </div>
+</header>
+
+<!-- ═══════════════════════ DECISION BADGE ═══════════════════════ -->
+<div class="decision-band" id="decision-band" aria-live="polite">
+  <div class="decision-badge" id="decision-badge">AWAITING SCAN</div>
+  <div class="decision-rationale" id="decision-rationale">Run a scan to begin analysis.</div>
+</div>
+
+<!-- ═══════════════════════ COMPARISON MAPS ═══════════════════════ -->
+<section class="comparison-section" aria-label="Map comparison">
+
+  <!-- Left: Conventional Denoiser -->
+  <div class="map-panel" id="panel-conventional">
+    <div class="panel-header">
+      <h2 class="panel-title">CONVENTIONAL DENOISER</h2>
+      <div class="panel-stats">
+        <span class="stat-item"><span class="stat-val" id="sg-rmse">—</span> <span class="stat-unit">cm⁻¹ RMSE</span></span>
+        <span class="stat-sep" aria-hidden="true">·</span>
+        <span class="stat-item"><span class="stat-val" id="sg-gain">—</span> <span class="stat-unit">× apparent gain</span></span>
+        <span class="stat-sep" aria-hidden="true">·</span>
+        <span class="stat-item"><span class="stat-val" id="sg-false">—</span> <span class="stat-unit">false features</span></span>
+      </div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="canvas-sg" width="256" height="256" aria-label="Conventional denoiser stress map"></canvas>
+      <div class="canvas-placeholder" id="placeholder-sg" aria-hidden="true">
+        <span>Run a scan</span>
+      </div>
+    </div>
+    <div class="panel-footer">
+      <span class="footer-note" id="sg-footnote">Savitzky–Golay (w=11, p=3). 168 of 209 supported features are not supported by the photons collected at this exposure.</span>
+    </div>
+  </div>
+
+  <!-- Shared colour scale -->
+  <div class="scale-bar" aria-label="Shared colour scale">
+    <div class="scale-gradient" id="scale-gradient"></div>
+    <div class="scale-labels">
+      <span id="scale-min">—</span>
+      <span class="scale-title">Δ cm⁻¹</span>
+      <span id="scale-max">—</span>
+    </div>
+  </div>
+
+  <!-- Right: OptiGuard -->
+  <div class="map-panel" id="panel-optiguard">
+    <div class="panel-header">
+      <h2 class="panel-title">OPTIGUARD</h2>
+      <div class="panel-stats">
+        <span class="stat-item"><span class="stat-val" id="og-certified">—</span> <span class="stat-unit">certified</span></span>
+        <span class="stat-sep" aria-hidden="true">·</span>
+        <span class="stat-item"><span class="stat-val" id="og-review">—</span> <span class="stat-unit">review</span></span>
+        <span class="stat-sep" aria-hidden="true">·</span>
+        <span class="stat-item"><span class="stat-val" id="og-withheld">—</span> <span class="stat-unit">withheld</span></span>
+      </div>
+    </div>
+    <div class="canvas-wrap">
+      <canvas id="canvas-og" width="256" height="256" aria-label="OptiGuard certified stress map — uncertified regions rendered at photon precision"></canvas>
+      <div class="canvas-placeholder" id="placeholder-og" aria-hidden="true">
+        <span>Run a scan</span>
+      </div>
+    </div>
+    <div class="panel-footer">
+      <span class="footer-note" id="og-footnote">Uncertified regions rendered at the precision the collected photons actually support. Click any pixel for evidence.</span>
+    </div>
+  </div>
+
+</section>
+
+<!-- ═══════════════════════ EVIDENCE ROW ═══════════════════════ -->
+<section class="evidence-row" id="evidence-row" aria-label="Pixel evidence" aria-live="polite">
+  <div class="evidence-label">PIXEL <span id="ev-coords">—, —</span></div>
+  <div class="evidence-cells">
+    <div class="ev-cell">
+      <span class="ev-val mono" id="ev-photons">—</span>
+      <span class="ev-unit">photons</span>
+    </div>
+    <div class="ev-sep" aria-hidden="true"></div>
+    <div class="ev-cell">
+      <span class="ev-val mono" id="ev-crlb">—</span>
+      <span class="ev-unit">CRLB cm⁻¹</span>
+    </div>
+    <div class="ev-sep" aria-hidden="true"></div>
+    <div class="ev-cell">
+      <span class="ev-val mono" id="ev-sigma">—</span>
+      <span class="ev-unit">claimed σ cm⁻¹</span>
+    </div>
+    <div class="ev-sep" aria-hidden="true"></div>
+    <div class="ev-cell">
+      <span class="ev-val mono" id="ev-ratio">—</span>
+      <span class="ev-unit">σ / floor</span>
+    </div>
+    <div class="ev-sep" aria-hidden="true"></div>
+    <div class="ev-cell gate-cell">
+      <span class="gate-badge" id="ev-t1a">T1a</span>
+      <span class="gate-badge" id="ev-t1b">T1b</span>
+      <span class="gate-badge" id="ev-t4">T4</span>
+    </div>
+    <div class="ev-sep" aria-hidden="true"></div>
+    <div class="ev-cell ev-cell--wide">
+      <span class="ev-val ev-verdict" id="ev-verdict">Click a pixel on the map</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════ RECOMMENDATION BAR ═══════════════════════ -->
+<section class="recommendation-bar" id="recommendation-bar" aria-label="Acquisition recommendation">
+  <div class="rec-left">
+    <span class="rec-label">RECOMMENDED</span>
+    <span class="rec-value" id="rec-text">—</span>
+  </div>
+  <div class="rec-right">
+    <span class="timing-block">
+      <span class="timing-val" id="time-hybrid">—</span>
+      <span class="timing-label">hybrid</span>
+    </span>
+    <span class="timing-vs" aria-hidden="true">vs</span>
+    <span class="timing-block">
+      <span class="timing-val" id="time-slow">—</span>
+      <span class="timing-label">full scan</span>
+    </span>
+  </div>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

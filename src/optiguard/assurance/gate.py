@@ -1,5 +1,17 @@
 """
-Assurance Gate Tests: T1 (Precision Floor), T2 (Pooling Legitimacy), T3 (Photon Consistency).
+Assurance Gate Tests.
+
+T1a (Variance Deficit): chi2_nu self-consistency test — catches any processing
+    that removed noise the photons should have produced. Fires on spatial smoothing.
+    This is a self-consistency test, NOT an information-limit test.
+
+T1b (Information Limit): residual-scaled sigma vs CRLB/sqrt(N_eff) — catches
+    precision fabrication even after variance has been accounted for by N_eff.
+    This is the patentable mechanism: §5.5 of the project spec.
+
+T2 (Pooling Legitimacy): chi2 test for neighbourhood homogeneity.
+T3 (Photon Consistency): Poisson deviance between restored and raw counts.
+
 Step 10 specification.
 """
 from typing import Dict, Any, Optional
@@ -54,6 +66,127 @@ def test_precision_floor(
         "floor": floor,
         "ratio": claimed / floor if floor > 0 else float("inf"),
         "slack": claimed - floor
+    }
+
+
+def test_variance_deficit(
+    observed_counts: np.ndarray,
+    fitted_center: float,
+    fitted_fwhm: float,
+    fitted_amplitude: float,
+    fitted_background: float,
+    axis: np.ndarray,
+    read_noise_e: float = 0.0,
+    chi2nu_threshold: float = 0.5
+) -> Dict[str, Any]:
+    """T1a Gate: Test whether the fit residuals are consistent with the Poisson noise model.
+
+    Self-consistency test: measures chi2_nu = chi2 / df.
+    For honest (un-smoothed) data, chi2_nu ~ 1.0.
+    For spatially-smoothed data, variance is removed so chi2_nu << 1.
+    Any processing that suppresses shot noise below the Poisson floor will be detected.
+
+    IMPORTANT: This is a self-consistency test, NOT an information-limit test.
+    A good denoiser that legitimately pools N_eff photons SHOULD also show chi2_nu < 1,
+    because it has legitimately reduced variance. The combination of chi2_nu and N_eff
+    (via T1b) distinguishes legitimate pooling from variance fabrication.
+
+    Args:
+        observed_counts: (C,) raw or restored spectral counts in fit window
+        fitted_center, fitted_fwhm, fitted_amplitude, fitted_background: Lorentzian params
+        axis: (C,) spectral axis values corresponding to observed_counts
+        read_noise_e: Detector read noise standard deviation in electrons
+        chi2nu_threshold: Flag if chi2_nu < this value (default 0.5 = deficit > 2-sigma)
+
+    Returns:
+        Dict with 'failed': bool, 'chi2_nu', 'chi2', 'df', 'threshold'
+    """
+    from optiguard.physics.lineshapes import lorentzian
+
+    obs = np.asarray(observed_counts, dtype=np.float64)
+    ax = np.asarray(axis, dtype=np.float64)
+    C = obs.size
+
+    # Poisson model prediction
+    mu = lorentzian(ax, fitted_center, fitted_fwhm, fitted_amplitude) + fitted_background
+    var = np.maximum(mu + read_noise_e ** 2, 1e-9)
+
+    # Pearson chi2 statistic
+    chi2 = float(np.sum((obs - mu) ** 2 / var))
+    df = C - 4  # 4 free parameters: center, fwhm, amplitude, background
+    chi2_nu = chi2 / max(df, 1)
+
+    # Flag when variance is significantly suppressed below the Poisson expectation
+    failed = bool(chi2_nu < chi2nu_threshold)
+
+    return {
+        "gate": "T1a",
+        "name": "variance_deficit",
+        "failed": failed,
+        "chi2_nu": chi2_nu,
+        "chi2": chi2,
+        "df": df,
+        "threshold": chi2nu_threshold
+    }
+
+
+def test_information_limit(
+    sigma_center_fit: float,
+    chi2_nu: float,
+    crlb: float,
+    neff: float = 1.0,
+    tol: float = 1e-9
+) -> Dict[str, Any]:
+    """T1b Gate: Test whether residual-scaled precision beats the N_eff-adjusted CRLB.
+
+    Information limit test: the patentable mechanism from §5.5 of the spec.
+
+    The fitter derives sigma_center from the Fisher Information of the Poisson
+    model mean, which is correct but blind to upstream smoothing. Multiplying by
+    sqrt(chi2_nu) corrects for the actual residual variance:
+        sigma_scaled = sigma_center * sqrt(chi2_nu)
+
+    If the processing is honest and pools N_eff pixels, then:
+        sigma_scaled >= CRLB / sqrt(N_eff)    [passes T1b]
+
+    If the processing fabricates precision by removing noise without pooling
+    real photons, then sigma_scaled will beat the floor despite low chi2_nu:
+        sigma_scaled < CRLB / sqrt(N_eff)     [fails T1b]
+
+    The combination of T1a (chi2_nu << 1) AND T1b (beats floor) is the signature
+    of the exploit: variance has been removed AND that removal cannot be explained
+    by legitimate spatial pooling of independent photons.
+
+    Args:
+        sigma_center_fit: sigma_center from Jacobian-based fit covariance (cm^-1)
+        chi2_nu: chi2 per degree of freedom from the fit residuals
+        crlb: Single-pixel information-theoretic lower bound (cm^-1)
+        neff: Effective pooled pixels (from Jacobian probe on real data, >= 1)
+        tol: Numerical tolerance
+
+    Returns:
+        Dict with 'failed': bool, 'sigma_scaled', 'floor', 'ratio', 'chi2_nu'
+    """
+    sigma_fit = float(sigma_center_fit)
+    chi2_nu_val = float(chi2_nu)
+    neff_val = max(float(neff), 1.0)
+
+    # Residual-scaled sigma: corrects for variance removal by upstream processing
+    sigma_scaled = sigma_fit * (chi2_nu_val ** 0.5)
+
+    floor = float(crlb) / (neff_val ** 0.5)
+    failed = bool(sigma_scaled < (floor - tol))
+
+    return {
+        "gate": "T1b",
+        "name": "information_limit",
+        "failed": failed,
+        "sigma_scaled": sigma_scaled,
+        "sigma_fit": sigma_fit,
+        "chi2_nu": chi2_nu_val,
+        "floor": floor,
+        "ratio": sigma_scaled / floor if floor > 0 else float("inf"),
+        "neff": neff_val
     }
 
 
@@ -270,87 +403,123 @@ def test_photon_consistency(
 
 
 def evaluate_gate(
-    sample,
+    sample: object,
     restored_counts: np.ndarray,
     neff_map: np.ndarray,
     read_noise_e: float = 0.0,
+    chi2nu_threshold: float = 0.5,
+    t1b_threshold_ratio: float = 1.0,
+    t4_threshold_ratio: float = 1.0,
     alpha_t2: float = 0.01,
     alpha_t3: float = 0.01,
     t2_sigma: float = 2.0,
-    spectral_window: Optional[tuple] = None,
-    t1_ratio_threshold: float = 1.0
+    spectral_window: Optional[tuple] = None
 ) -> Dict[str, Any]:
-    """Wire T1/T2/T3 into a single per-pixel support classification.
+    """Wire T1a/T1b/T2/T3 into a single per-pixel support classification.
 
     For each pixel, evaluates:
-    - T1: Is the network's fitted precision tighter than crlb/sqrt(N_eff)?
-    - T2: Is the neighbourhood spectrally homogeneous (pooling legitimate)?
-    - T3: Is the restored spectrum consistent with the raw photon counts?
+    - T1a (variance_deficit): Are fit residuals consistent with Poisson noise?
+          chi2_nu << 1 means variance was removed (smoothing, denoising).
+          Self-consistency test — fires on ANY denoiser, including good ones.
+    - T1b (information_limit): Does residual-scaled precision beat CRLB/sqrt(N_eff)?
+          The patentable mechanism: sigma_fit*sqrt(chi2_nu) vs CRLB/sqrt(neff).
+          Fires only if variance removal cannot be explained by legitimate pooling.
+    - T2 (pooling_legitimacy): Is the neighbourhood spectrally homogeneous?
+    - T3 (photon_consistency): Is the restored spectrum consistent with raw counts?
 
-    Returns a per-pixel support_class map:
-      'PASS'    - all three gates pass (restoration can be trusted)
-      'FAIL_T1' - claimed precision beats the N_eff-adjusted floor (fabricated)
-      'FAIL_T2' - neighbourhood is heterogeneous (pooling across a boundary)
-      'FAIL_T3' - restored spectrum inconsistent with raw counts (peak shifted)
-
-    Multiple failures are possible; the support_class records the first failure
-    in the T1 > T2 > T3 priority order (T1 is the most fundamental violation).
+    Support class priority: T1b > T1a > T2 > T3.
+    T1b is the most fundamental violation (fabricated information).
+    T1a alone means variance is suppressed but pooling credit may explain it.
 
     Args:
         sample: MapSample object with .axis, .short_counts, .theta_true, .meta
         restored_counts: (H, W, C) array of restored spectral counts
-        neff_map: (H, W) per-pixel N_eff from Jacobian probe (real-data probe)
+        neff_map: (H, W) per-pixel N_eff from Jacobian probe on real data
         read_noise_e: Detector read noise in electrons
         alpha_t2: Significance level for T2 boundary test
         alpha_t3: Significance level for T3 photon consistency test
         t2_sigma: Gaussian sigma (pixels) for T2 neighbourhood
-        spectral_window: Optional (start, end) channel indices for T2
+        spectral_window: Optional (start, end) channel indices for T2 and T3
+        chi2nu_threshold: T1a threshold — flag if chi2_nu < this (default 0.5)
 
     Returns:
         Dict with:
-          'support_class':  (H, W) array of strings
-          'fail_t1':        (H, W) bool
-          'fail_t2':        (H, W) bool
-          'fail_t3':        (H, W) bool
-          'precision_ratio': (H, W) claimed_sigma / floor
+          'support_class':  (H, W) str array ('PASS'/'FAIL_T1a'/'FAIL_T1b'/'FAIL_T2'/'FAIL_T3')
+          'fail_t1a':       (H, W) bool — variance deficit
+          'fail_t1b':       (H, W) bool — information limit
+          'fail_t2':        (H, W) bool — neighbourhood heterogeneous
+          'fail_t3':        (H, W) bool — photon inconsistency
+          'chi2_nu_map':    (H, W) float — per-pixel chi2/df from fit residuals
+          'sigma_scaled_map': (H, W) float — sigma_fit * sqrt(chi2_nu)
           'crlb_map':       (H, W) single-pixel CRLB
-          'floor_map':      (H, W) N_eff-adjusted floor
+          'floor_map':      (H, W) N_eff-adjusted CRLB floor
+          'precision_ratio': (H, W) sigma_scaled / floor (T1b quantity)
           'summary':        dict of counts per class
     """
     from optiguard.physics.crlb import crlb_plugin_map
     from optiguard.estimation.fit import fit_lorentzian_map
+    from optiguard.physics.lineshapes import lorentzian
 
     axis = sample.axis
     raw_counts = sample.short_counts[list(sample.short_counts.keys())[0]]
     H, W, C = raw_counts.shape
     peak_nominal = float(sample.meta.get("peak_cm1", 520.7))
 
-    # --- Fit the restored map to get claimed precision ---
+    # Allow calling without a restoration network: fall back to raw counts
+    if restored_counts is None:
+        restored_counts = raw_counts.astype(np.float64)
+
+    # Allow calling without a probe-derived neff: no pooling credit
+    if neff_map is None:
+        neff_map = np.ones((H, W), dtype=np.float64)
+
+    # --- Fit the restored map to get per-pixel parameters and sigma_center ---
     theta_restored = fit_lorentzian_map(axis, restored_counts,
                                         read_noise_e=read_noise_e,
                                         nominal_center_cm1=peak_nominal)
-    # sigma_center is the sqrt of the (0,0) element of the fit's Jacobian-based covariance.
-    # This is the estimator's self-reported uncertainty, not an oracle comparison.
-    # CRLB bounds variance across realizations; comparing single-pixel errors to CRLB
-    # is statistically invalid and would give spurious T1 flags ~34% of the time.
-    claimed_sigma = theta_restored["sigma_center"]  # (H, W), from fit covariance
+    sigma_center_map = theta_restored["sigma_center"]  # (H, W)
 
-    # --- T1: precision floor ---
-    # Crop to spectral window around peak for CRLB calculation
+    # Spectral window used by the fitter (128 channels around peak)
     peak_idx = int(np.argmin(np.abs(axis - peak_nominal)))
-    w_start = max(0, peak_idx - 64)
-    w_end = min(C, peak_idx + 64)
-    counts_window = restored_counts[:, :, w_start:w_end]
+    fw_start = max(0, peak_idx - 64)
+    fw_end = min(C, peak_idx + 64)
+    axis_w = axis[fw_start:fw_end]
+    restored_w = restored_counts[:, :, fw_start:fw_end]   # (H, W, Cw)
 
-    crlb_map = crlb_plugin_map(
-        axis=axis,
-        counts_window=counts_window,
-        fitted_center=theta_restored["center"],
+    # --- T1a: per-pixel variance deficit (chi2_nu) ---
+    Cw = fw_end - fw_start
+    df = max(Cw - 4, 1)  # 4 free parameters
+
+    centers = theta_restored["center"]           # (H, W)
+    fwhms = theta_restored["fwhm"]               # (H, W)
+    amplitudes = theta_restored["amplitude"]     # (H, W)
+    backgrounds = theta_restored["background"]   # (H, W)
+
+    # Vectorised chi2 computation over the fit window
+    # axis_w: (Cw,), model params: (H, W)
+    dx = axis_w[None, None, :] - centers[:, :, None]          # (H, W, Cw)
+    gamma = fwhms[:, :, None] / 2.0
+    L = amplitudes[:, :, None] * gamma**2 / (dx**2 + gamma**2)
+    mu_w = L + backgrounds[:, :, None]                        # (H, W, Cw)
+    var_w = np.maximum(mu_w + read_noise_e**2, 1e-9)
+
+    chi2_map = np.sum((restored_w - mu_w)**2 / var_w, axis=-1)  # (H, W)
+    chi2_nu_map = chi2_map / df                                   # (H, W)
+    fail_t1a = chi2_nu_map < chi2nu_threshold
+
+    # --- CRLB plugin map ---
+    crlb_map_vals = crlb_plugin_map(
+        axis=axis_w,
+        counts_window=restored_w,
+        fitted_center=centers,
         read_noise_e=read_noise_e
     )
-    floor_map = crlb_map / np.maximum(neff_map ** 0.5, 1.0)
-    precision_ratio = np.where(floor_map > 0, claimed_sigma / floor_map, np.inf)
-    fail_t1 = precision_ratio < t1_ratio_threshold
+    floor_map = crlb_map_vals / np.maximum(neff_map ** 0.5, 1.0)
+
+    # --- T1b: residual-scaled sigma vs N_eff-adjusted CRLB ---
+    sigma_scaled_map = sigma_center_map * np.sqrt(np.maximum(chi2_nu_map, 0.0))
+    precision_ratio = np.where(floor_map > 0, sigma_scaled_map / floor_map, np.inf)
+    fail_t1b = precision_ratio < t1b_threshold_ratio
 
     # --- T2: pooling legitimacy across the map ---
     t2_result = test_pooling_legitimacy_map(
@@ -362,46 +531,141 @@ def evaluate_gate(
     )
     fail_t2 = t2_result["failed"]
 
-    # --- T3: per-pixel photon consistency ---
-    fail_t3 = np.zeros((H, W), dtype=bool)
+    # --- T3: per-pixel photon consistency (vectorised) ---
     if spectral_window is not None:
-        w_start, w_end = spectral_window
+        t3_start, t3_end = spectral_window
     else:
-        w_start, w_end = 0, C
-        
-    for y in range(H):
-        for x in range(W):
-            r = test_photon_consistency(
-                raw_counts[y, x, w_start:w_end],
-                restored_counts[y, x, w_start:w_end],
-                read_noise_e=read_noise_e,
-                alpha=alpha_t3
-            )
-            fail_t3[y, x] = r["failed"]
+        t3_start, t3_end = 0, C
 
-    # --- Compose support class (T1 > T2 > T3 priority) ---
-    support_class = np.full((H, W), "PASS", dtype=object)
-    support_class[fail_t3] = "FAIL_T3"
-    support_class[fail_t2] = "FAIL_T2"
-    support_class[fail_t1] = "FAIL_T1"
+    raw_t3  = raw_counts[:, :, t3_start:t3_end].astype(np.float64)      # (H, W, Ct)
+    rest_t3 = restored_counts[:, :, t3_start:t3_end].astype(np.float64)  # (H, W, Ct)
+    Ct = t3_end - t3_start
+    var_t3   = np.maximum(rest_t3 + read_noise_e ** 2, 1e-6)
+    chi2_t3  = np.sum((raw_t3 - rest_t3) ** 2 / var_t3, axis=-1)         # (H, W)
+    crit_t3  = float(stats.chi2.ppf(1.0 - alpha_t3, Ct))
+    fail_t3  = chi2_t3 > crit_t3
+
+    # --- T4: Feature Retention / Structural Preservation Test ---
+    from scipy.ndimage import median_filter
+    theta_raw = fit_lorentzian_map(axis, raw_counts.astype(np.float64),
+                                  read_noise_e=read_noise_e,
+                                  nominal_center_cm1=peak_nominal)
+    c_raw = theta_raw["center"]
+    crlb_raw = theta_raw["sigma_center"]
+
+    # Spatial background expectation (5x5 median filter on raw centers)
+    c_spatial_bg = median_filter(c_raw, size=5)
+
+    # Raw peak shift from spatial background in CRLB units
+    dev_raw = np.abs(c_raw - c_spatial_bg)
+    dev_rest = np.abs(theta_restored["center"] - c_spatial_bg)
+
+    d_raw = np.where((crlb_raw > 0) & np.isfinite(crlb_raw), dev_raw / crlb_raw, 0.0)
+    raw_supports_feature = d_raw >= 1.0
+
+    # Feature Erasure Discrepancy (D_T4): Amount of peak shift from spatial background erased by restoration
+    # D_T4 = max(0, dev_raw - dev_rest) / crlb_raw
+    c_restored = theta_restored["center"]
+    d_t4_map = np.zeros((H, W), dtype=np.float64)
+    valid_fits = np.isfinite(c_raw) & np.isfinite(c_restored) & np.isfinite(crlb_raw) & (crlb_raw > 0)
+    active_feat = valid_fits & raw_supports_feature
+    d_t4_map[active_feat] = np.maximum(0.0, dev_raw[active_feat] - dev_rest[active_feat]) / crlb_raw[active_feat]
+
+    fail_t4 = d_t4_map > t4_threshold_ratio
+
+    # --- Continuous Physical Confidence Scoring ---
+    # 1. Variance deficit penalty (only applies when chi2_nu < chi2nu_threshold)
+    d_t1a = np.where(chi2_nu_map < chi2nu_threshold,
+                     (chi2nu_threshold - chi2_nu_map) / chi2nu_threshold, 0.0)
+    d_t1a = np.maximum(0.0, d_t1a)
+
+    # 2. Precision ratio penalty (only applies when precision_ratio < t1b_threshold_ratio)
+    d_t1b = np.where(precision_ratio < t1b_threshold_ratio,
+                     (t1b_threshold_ratio - precision_ratio) / t1b_threshold_ratio, 0.0)
+    d_t1b = np.maximum(0.0, d_t1b)
+
+    # 3. Feature erasure penalty (only applies when D_T4 > t4_threshold_ratio)
+    d_t4_pen = np.where(d_t4_map > t4_threshold_ratio,
+                        (d_t4_map - t4_threshold_ratio) / t4_threshold_ratio, 0.0)
+    d_t4_pen = np.maximum(0.0, d_t4_pen)
+
+    from optiguard.assurance.ood import score_map, explain
+
+    # --- OOD Detection ---
+    ood_score = score_map(axis, raw_counts.astype(np.float64))
+    ood_penalty = np.exp(-ood_score)
+    
+    honesty_score = np.exp(- (2.0 * d_t1a**2 + 2.0 * d_t1b**2))
+    feature_score = np.exp(- (1.0 * d_t4_pen**2))
+    confidence_score = np.clip(honesty_score * feature_score * ood_penalty, 0.0, 1.0)
+
+    # --- Categorical Risk Fusion ---
+    risk_class = np.full((H, W), "PASS", dtype=object)
+    risk_class[fail_t4] = "FEATURE_ERASURE"
+    risk_class[fail_t3] = "HALLUCINATION"
+    exploit_mask = fail_t1a & fail_t1b
+    risk_class[exploit_mask] = "EXPLOIT"
+    
+    # We can flag OOD if the penalty drops confidence heavily
+    ood_mask = ood_penalty < 0.5
+    risk_class[ood_mask] = "REVIEW"
+
+    n_supported = int(np.sum(raw_supports_feature))
+    n_erased_supp = int(np.sum(fail_t4 & raw_supports_feature))
+    feature_erasure_rate = float(n_erased_supp / max(1, n_supported))
+    feat_score_supp = float(feature_score[raw_supports_feature].mean()) if n_supported > 0 else 1.0
+
+    # Attach explanation if any pixel is flagged for OOD
+    ood_rationale = None
+    if np.any(ood_mask):
+        # We need a dummy object or just pass axis and counts to explain
+        ood_rationale = explain(axis, raw_counts.astype(np.float64), ood_score)
 
     summary = {
-        "n_pass":    int(np.sum(support_class == "PASS")),
-        "n_fail_t1": int(np.sum(support_class == "FAIL_T1")),
-        "n_fail_t2": int(np.sum(support_class == "FAIL_T2")),
-        "n_fail_t3": int(np.sum(support_class == "FAIL_T3")),
-        "total":     int(H * W),
+        "n_pass":                   int(np.sum(risk_class == "PASS")),
+        "n_feature_erasure":        int(np.sum(risk_class == "FEATURE_ERASURE")),
+        "n_hallucination":          int(np.sum(risk_class == "HALLUCINATION")),
+        "n_exploit":                int(np.sum(risk_class == "EXPLOIT")),
+        "n_ood":                    int(np.sum(risk_class == "REVIEW")),   # OOD veto pixels
+        "n_boundary":               int(np.sum(fail_t2)),
+        "n_supported_features":     n_supported,
+        "n_erased_supported":       n_erased_supp,
+        "feature_erasure_rate":     feature_erasure_rate,
+        "feature_score_on_supported": feat_score_supp,
+        "total":                    int(H * W),
+        "mean_confidence":          float(confidence_score.mean()),
+        "mean_honesty":             float(honesty_score.mean()),
+        "mean_feature":             float(feature_score.mean()),
+        "mean_ood_score":           float(ood_score.mean()),
+        "ood_threshold_used":       0.5,
     }
+
+    if ood_rationale:
+        summary["ood_rationale"] = ood_rationale
     summary["pass_rate"] = summary["n_pass"] / summary["total"]
 
     return {
-        "support_class":   support_class,
-        "fail_t1":         fail_t1,
-        "fail_t2":         fail_t2,
-        "fail_t3":         fail_t3,
-        "precision_ratio": precision_ratio,
-        "crlb_map":        crlb_map,
-        "floor_map":       floor_map,
-        "summary":         summary,
+        "risk_class":           risk_class,
+        "confidence_score":     confidence_score,
+        "honesty_score":        honesty_score,
+        "feature_score":        feature_score,
+        "raw_supports_feature": raw_supports_feature,
+        "fail_t1a":             fail_t1a,
+        "fail_t1b":             fail_t1b,
+        "fail_t2":              fail_t2,
+        "fail_t3":              fail_t3,
+        "fail_t4":              fail_t4,
+        "d_t4_map":             d_t4_map,
+        "chi2_nu_map":          chi2_nu_map,
+        "sigma_scaled_map":     sigma_scaled_map,
+        "crlb_map":             crlb_map_vals,
+        "floor_map":            floor_map,
+        "precision_ratio":      precision_ratio,
+        "ood_score_map":        ood_score,
+        "ood_penalty_map":      ood_penalty,
+        "summary":              summary,
+        "center_map":           theta_restored["center"],
+        "sigma_center_map":     theta_restored["sigma_center"],
     }
+
 

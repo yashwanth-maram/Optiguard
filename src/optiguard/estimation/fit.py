@@ -153,13 +153,18 @@ def fit_lorentzian_map(axis, counts_cube, read_noise_e=0.0, max_iter=20, tol=1e-
         
         A = JTJ + l_active[:, None, None] * diag_JTJ[:, :, None] * I
         
-        # Solve
-        delta = np.zeros_like(t_active)
-        for i in range(len(t_active)):
-            try:
-                delta[i] = np.linalg.solve(A[i], -JTr[i])
-            except np.linalg.LinAlgError:
-                l_active[i] *= 10.0
+        # Batched solve: A @ delta = -JTr  for all active pixels at once.
+        # np.linalg.solve gufunc signature (m,m),(m,n) requires RHS as (N,4,1).
+        try:
+            delta = np.linalg.solve(A, -JTr[:, :, None])[:, :, 0]
+        except np.linalg.LinAlgError:
+            # Rare singular case — fall back pixel-by-pixel
+            delta = np.zeros_like(t_active)
+            for i in range(len(t_active)):
+                try:
+                    delta[i] = np.linalg.solve(A[i], -JTr[i])
+                except np.linalg.LinAlgError:
+                    l_active[i] *= 10.0
                 
         t_new = t_active + delta
         # Bounds
@@ -186,16 +191,14 @@ def fit_lorentzian_map(axis, counts_cube, read_noise_e=0.0, max_iter=20, tol=1e-
     res, J, _ = calc_residual_and_jac(theta, y_batch)
     JT = np.swapaxes(J, 1, 2)
     JTJ = np.matmul(JT, J)
-    cov = np.zeros_like(JTJ)
-    sigma_center = np.full(N, np.inf, dtype=np.float32)
-    
-    for n in range(N):
-        try:
-            cov[n] = np.linalg.inv(JTJ[n])
-            sigma_center[n] = np.sqrt(cov[n, 0, 0])
-        except np.linalg.LinAlgError:
-            cov[n] = np.inf
-            sigma_center[n] = np.inf
+    # Batched covariance via pinv (handles near-singular pixels without crashing)
+    cov = np.linalg.pinv(JTJ)                          # (N, 4, 4)
+    diag0 = cov[:, 0, 0]                               # (N,)
+    sigma_center = np.where(
+        np.isfinite(diag0) & (diag0 >= 0),
+        np.sqrt(np.maximum(diag0, 0.0)),
+        np.inf
+    ).astype(np.float32)
             
     return {
         "center": theta[:, 0].reshape(H, W),

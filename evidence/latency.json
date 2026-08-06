@@ -1,0 +1,8 @@
+{
+  "64x64": {
+    "latency_s": 9.662,
+    "target_s": 5.0,
+    "met": false,
+    "note": "Bottleneck is fit_lorentzian_map x2 (vectorised LM but still 20 iter x 4096 pixels). Target missed."
+  }
+}

@@ -1,0 +1,19 @@
+services:
+  optiguard:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./evidence:/app/evidence
+    # No network access for the container (offline demo)
+    network_mode: none
+
+  # Replay variant: uncomment and set replay file
+  # optiguard-replay:
+  #   build: .
+  #   ports:
+  #     - "8000:8000"
+  #   volumes:
+  #     - ./evidence:/app/evidence
+  #   command: python apps/serve.py --host 0.0.0.0 --port 8000 --replay evidence/demo_case.json
+  #   network_mode: none

@@ -17,11 +17,23 @@ acquisition:
 map:
   shape: [64, 64]            # start small; scale to 128x128 once Step 6 passes
   material: silicon
+  peak_photons_per_s: 4000   # default signal rate at reference conditions
 
-silicon:
-  peak_cm1: 520.7
-  fwhm_cm1: 3.5
-  peak_photons_per_s: 4000   # signal rate at reference conditions
+materials:
+  silicon:            # in-distribution
+    peaks: [{center: 520.7, fwhm: 3.5, rel_amplitude: 1.0}]
+  amorphous_silicon:  # OOD-A: broad band, breaks the linewidth prior
+    peaks: [{center: 480.0, fwhm: 70.0, rel_amplitude: 1.0}]
+  sic_4h:             # OOD-B: multiple modes, single-Lorentzian is structurally wrong
+    peaks: [{center: 776.0, fwhm: 4.0, rel_amplitude: 0.6},
+            {center: 796.0, fwhm: 4.0, rel_amplitude: 1.0}]
+  gan:                # OOD-C: band far from the nominal window anchor
+    peaks: [{center: 567.0, fwhm: 5.0, rel_amplitude: 1.0}]
+  si_doublet:         # OOD-D: THE HARD CASE
+    peaks: [{center: 519.7, fwhm: 3.5, rel_amplitude: 1.0},
+            {center: 521.7, fwhm: 3.5, rel_amplitude: 0.8}]
+  si_broad:           # Sweep material: same peak position, slightly wider
+    peaks: [{center: 520.7, fwhm: 4.5, rel_amplitude: 1.0}]
 
 stress_field:
   kind: smooth_gradient      # smooth_gradient | grain | radial

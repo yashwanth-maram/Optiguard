@@ -1,27 +1,34 @@
 import numpy as np
 from optiguard.physics.lineshapes import lorentzian
 
-def crlb_peak_position(axis, center, fwhm, amplitude, background, read_noise_e):
-    # Match the 128-channel window of the estimator
-    window_size = 128
+def crlb_peak_position(axis, center, fwhm, amplitude, background, read_noise_e, b=1):
+    # Match the 128-channel window of the estimator (on the binned grid)
+    window_size = 128 * b
     peak_idx = np.argmin(np.abs(axis - center))
     start_idx = max(0, peak_idx - window_size // 2)
     end_idx = min(len(axis), start_idx + window_size)
     if end_idx - start_idx < window_size and start_idx > 0:
         start_idx = max(0, end_idx - window_size)
         
-    axis = axis[start_idx:end_idx]
+    axis_window = axis[start_idx:end_idx]
     
+    trim = len(axis_window) % b
+    if trim > 0:
+        axis_window = axis_window[:-trim]
+        
     theta = np.array([center, fwhm, amplitude, background])
     
     def model(t):
-        c, f, a, b = t
-        return lorentzian(axis, c, f, a) + b
+        c, f, a, bg = t
+        y = lorentzian(axis_window, c, f, a) + bg
+        if b > 1:
+            y = y.reshape(-1, b).sum(axis=1)
+        return y
     
     # Central difference
+    n_bins = len(model(theta))
     FIM = np.zeros((4, 4))
-    n = len(axis)
-    grad = np.zeros((4, n))
+    grad = np.zeros((4, n_bins))
     
     for i in range(4):
         eps = 1e-6 * max(1.0, abs(theta[i]))
@@ -35,14 +42,22 @@ def crlb_peak_position(axis, center, fwhm, amplitude, background, read_noise_e):
         grad[i] = (mu_plus - mu_minus) / (2 * eps)
         
     mu = model(theta)
-    var = mu + read_noise_e**2
-    
+    var = np.maximum(mu + read_noise_e**2, 1e-9)
+
     for i in range(4):
         for j in range(4):
             FIM[i, j] = np.sum((grad[i] * grad[j]) / var)
-            
-    cov = np.linalg.inv(FIM)
-    return np.sqrt(cov[0, 0])
+
+    # Guard: if FIM is singular or NaN (e.g. OOD material, diverged fit)
+    # return a large-but-finite sentinel rather than crashing.
+    if not np.all(np.isfinite(FIM)) or np.linalg.matrix_rank(FIM) < 4:
+        return 999.0
+    try:
+        cov = np.linalg.inv(FIM)
+        val = cov[0, 0]
+        return float(np.sqrt(val)) if np.isfinite(val) and val >= 0 else 999.0
+    except np.linalg.LinAlgError:
+        return 999.0
 
 def crlb_plugin_map(axis, counts_window, fitted_center, read_noise_e,
                     fwhm_pooled=None):
@@ -152,11 +167,17 @@ def crlb_peak_position_map(axis, center, fwhm, amplitude, background, read_noise
         grad[i] = (mu_plus - mu_minus) / (2 * eps[..., None])
         
     mu = model(theta)
-    var = mu + read_noise_e**2
-    
+    var = np.maximum(mu + read_noise_e**2, 1e-9)
+
     for i in range(4):
         for j in range(4):
-            FIM[..., i, j] = np.sum((grad[i] * grad[j]) / var, axis=-1)
-            
-    cov = np.linalg.inv(FIM)
-    return np.sqrt(cov[..., 0, 0])
+            FIM[..., i, j] = np.sum((grad[i] * grad[j]) / np.maximum(var, 1e-9), axis=-1)
+
+    # Sanitise NaN/inf before pinv — diverged OOD fits produce these.
+    FIM_clean = np.where(np.isfinite(FIM), FIM, 0.0)
+    cov = np.linalg.pinv(FIM_clean)
+    result = np.sqrt(np.abs(cov[..., 0, 0]))
+    # Any pixel where FIM was degenerate gets the sentinel CRLB.
+    degenerate = ~np.all(np.isfinite(FIM), axis=(-1, -2))
+    result[degenerate] = 999.0
+    return result

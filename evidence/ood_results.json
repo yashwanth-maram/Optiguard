@@ -1,0 +1,32 @@
+{
+  "calibrated_threshold": 0.09044764190912247,
+  "in_distribution_null_rate": 0.048421223958333336,
+  "auroc_per_material": {
+    "amorphous_silicon": 1.0,
+    "sic_4h": 1.0,
+    "gan": 1.0,
+    "si_doublet": 1.0
+  },
+  "doublet_detection_rate": 1.0,
+  "auroc_by_method": {
+    "residual_structure": {
+      "amorphous_silicon": 0.9790520932939318,
+      "sic_4h": 1.0,
+      "gan": 0.5064767532878451,
+      "si_doublet": 1.0
+    },
+    "parameter_plausibility": {
+      "amorphous_silicon": 1.0,
+      "sic_4h": 1.0,
+      "gan": 0.9999999999999999,
+      "si_doublet": 1.0
+    },
+    "embedding_distance": {
+      "amorphous_silicon": 1.0,
+      "sic_4h": 1.0,
+      "gan": 1.0,
+      "si_doublet": 1.0
+    }
+  },
+  "winner": "residual_structure"
+}

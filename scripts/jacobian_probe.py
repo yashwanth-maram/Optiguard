@@ -1,5 +1,6 @@
 import sys; sys.path.insert(0, 'src')
-import numpy as np, torch
+import numpy as np
+import torch
 import argparse
 from optiguard.data.simulator import MapSimulator
 from optiguard.models.spatial_spectral import SpatialSpectralUNet
@@ -51,9 +52,10 @@ def compute_neff(checkpoint_path, data_config='configs/simulator.yaml', index=6,
     # Print the top 5 contributing pixels
     flat_indices = torch.argsort(spatial_grad.flatten(), descending=True)
     print(f"Top spatial contributors:")
+    H, W = spatial_grad.shape
     for i in range(5):
         idx = flat_indices[i].item()
-        y, x = idx // 64, idx % 64
+        y, x = idx // W, idx % W
         weight_frac = spatial_grad[y, x].item() / sum_w
         dy, dx = y - center_y, x - center_x
         print(f"  Rank {i+1}: offset (dy={dy:2d}, dx={dx:2d}) -> {weight_frac:.2%} of gradient")
