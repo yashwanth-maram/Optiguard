@@ -236,21 +236,31 @@ if TORCH_AVAILABLE:
                 
                 # --- Centroid loss (dominant term) ---
                 # Soft-argmax over spectral axis at each pixel.
-                # Background-subtract: remove per-pixel min so continuum
-                # doesn't drag the centroid toward the window centre.
-                pred_hw_c = pred.permute(0, 2, 3, 1)           # (B, H, W, C)
-                bg = pred_hw_c.min(dim=-1, keepdim=True).values
-                pred_sub = pred_hw_c - bg                       # (B, H, W, C)
+                # Windowed Center of Mass to prevent background lever-arm exploit
+                pred_hw_c = pred.permute(0, 2, 3, 1)
+                window = 18
+                B, H, W, C = pred_hw_c.shape
+                peak_idx = pred_hw_c.argmax(dim=-1, keepdim=True)
+                indices = torch.arange(C, device=device).view(1, 1, 1, C).expand(B, H, W, C)
+                mask = (indices >= peak_idx - window) & (indices <= peak_idx + window)
                 
-                # Linear center of mass on baseline-subtracted counts
-                norm = torch.clamp(pred_sub.sum(dim=-1, keepdim=True), min=1e-6)
-                weights = pred_sub / norm
+                # Local background subtraction inside the window
+                masked_pred = pred_hw_c.masked_fill(~mask, float('inf'))
+                local_bg = masked_pred.min(dim=-1, keepdim=True).values
+                pred_sub_windowed = (pred_hw_c - local_bg) * mask
+                
+                norm = torch.clamp(pred_sub_windowed.sum(dim=-1, keepdim=True), min=1e-6)
+                weights = pred_sub_windowed / norm
                 axis_exp = axis[:, None, None, :]               # (B, 1, 1, C)
                 centroid = (weights * axis_exp).sum(dim=-1)     # (B, H, W)
                 
                 # CRLB-normalised smooth-L1: error in units of CRLB
                 crlb_safe = torch.clamp(crlb_map, min=1e-6)
-                norm_err = (centroid - center_true) / crlb_safe
+                norm_err = (centroid - center_true).abs() / crlb_safe
+                
+                if norm_err.mean().item() < 0.75 and epoch > 1:
+                    raise RuntimeError(f"Centroid loss {norm_err.mean().item():.3f} < 0.75 CRLB. The model has likely found a shortcut exploit.")
+                
                 param_loss = torch.nn.functional.smooth_l1_loss(norm_err, torch.zeros_like(norm_err))
                 
                 # --- Photon-count terms ---
@@ -276,11 +286,39 @@ if TORCH_AVAILABLE:
             train_poisson  /= len(train_ds)
             
             if epoch == start_epoch or epoch % checkpoint_every == 0:
+                # Quick fit check on one validation sample to compare with training centroid loss
+                with torch.no_grad():
+                    val_sample = val_samples[0]
+                    sc = val_sample.short_counts[exposure]
+                    peak_nominal = 520.7  # approximate, _nominal isn't imported here, but we can compute w_start
+                    peak_idx = int(np.argmin(np.abs(val_sample.axis - peak_nominal)))
+                    w_start = max(0, peak_idx - in_channels // 2)
+                    w_end = min(sc.shape[2], peak_idx + in_channels // 2)
+                    cropped = sc[:, :, w_start:w_end]
+                    act_c = cropped.shape[2]
+                    
+                    if act_c != in_channels:
+                        padded = np.zeros((sc.shape[0], sc.shape[1], in_channels), dtype=np.float32)
+                        padded[:, :, :act_c] = cropped
+                        inp_t = torch.from_numpy(padded.transpose(2, 0, 1)).unsqueeze(0).to(device)
+                    else:
+                        inp_t = torch.from_numpy(cropped.transpose(2, 0, 1).astype(np.float32)).unsqueeze(0).to(device)
+                        
+                    out_t = model(inp_t)
+                    out_np = out_t.squeeze(0).cpu().numpy().transpose(1, 2, 0)
+                    restored = np.copy(sc).astype(np.float64)
+                    restored[:, :, w_start:w_end] = out_np[:, :, :act_c]
+                    
+                    from optiguard.eval.baselines import fit_map, _nominal
+                    val_theta = fit_map(val_sample.axis, restored, val_sample.meta.get("read_noise_e", 0.0), _nominal(val_sample))
+                    val_rmse = np.sqrt(np.mean((val_theta['center'] - val_sample.theta_true['center'])**2))
+                    
                 print(
                     f"[Epoch {epoch:03d}] Loss: {train_loss:.4f} "
                     f"| centroid: {train_centroid:.4f} (w: {0.6*train_centroid:.4f}) "
                     f"| L1: {train_l1:.4f} (w: {0.3*train_l1:.4f}) "
-                    f"| Poisson: {train_poisson:.4f} (w: {0.1*train_poisson:.4f})"
+                    f"| Poisson: {train_poisson:.4f} (w: {0.1*train_poisson:.4f}) "
+                    f"| val_rmse: {val_rmse:.4f} cm^-1"
                 )
             
             # Save latest checkpoint every epoch

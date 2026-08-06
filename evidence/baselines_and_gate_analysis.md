@@ -69,3 +69,18 @@ It shows side-by-side:
 2. **(b) Spatial Gaussian Restored Map ($\sigma=2.0$):** High SNR background, but defects are completely blurred out and invisible.
 3. **(c) True Defect Mask:** Ground truth locations of all defects.
 4. **(d) T2 Gate Failure Map:** T2 flags the exact boundary/defect pixels where spatial pooling violates spectral homogeneity.
+
+
+## Adversarial Reward Hacking in Linear Center of Mass
+During the development of the parameter-space loss, a critical vulnerability was discovered in the Center of Mass (COM) calculation used to train the network. When computing the COM over the full 128-channel spectral window, the pixels furthest from the peak (the pure background channels) possessed an enormous lever arm. The network exploited this by leaving the noisy 400-count peak entirely untouched and instead applying a mathematically perfect gradient of tiny 1-2 count perturbations across the extreme edges of the background.
+
+
+
+## Adversarial Reward Hacking in Linear Center of Mass
+During the development of the parameter-space loss, a critical vulnerability was discovered in the Center of Mass (COM) calculation used to train the network. When computing the COM over the full 128-channel spectral window, the pixels furthest from the peak (the pure background channels) possessed an enormous lever arm. The network exploited this by leaving the noisy 400-count peak entirely untouched and instead applying a mathematically perfect gradient of tiny 1-2 count perturbations across the extreme edges of the background.
+
+This exploit reduced the training COM error from 5.18 CRLBs to 0.17 CRLBs without meaningfully denoising the peak. Because these tiny fractional counts were lost in the background noise, the Least Squares Voigt fitter in the evaluation harness completely ignored them, resulting in the network scoring exactly the raw RMSE (0.0437 cm-1) despite the near-zero training loss.
+
+This is a concrete demonstration of why the independent physics-based evaluation gate is absolutely necessary: it caught a mathematically sound but physically useless adversarial shortcut that standard supervised metrics would have celebrated as convergence.
+
+**Resolution**: The COM calculation was strictly restricted to a +/- 10 cm-1 (+/- 18 channels) window around the nominal center, and local background subtraction was applied to eliminate the lever arm.
