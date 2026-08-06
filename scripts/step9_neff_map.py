@@ -7,6 +7,12 @@ from optiguard.data.simulator import MapSimulator
 from optiguard.models.spatial_spectral import SpatialSpectralUNet
 import time
 
+# IMPORTANT: N_eff is activation-dependent for nonlinear networks.
+# Random input activates all spatial positions uniformly -> inflated N_eff.
+# Real spectroscopic data has a dominant central peak -> the network's
+# activations collapse and N_eff reflects the true operational footprint.
+# Always probe with real data from the actual data distribution.
+
 def get_spatial_gauss_neff_map(sigma=2.0, H=64, W=64):
     """Compute N_eff map for a spatial gaussian filter by building the Jacobian."""
     print(f"Running known-answer test on spatial_gauss (sigma={sigma})")
@@ -44,10 +50,27 @@ def get_spatial_gauss_neff_map(sigma=2.0, H=64, W=64):
     
     return neff_map
 
-def get_network_neff_map(checkpoint_path, H=64, W=64):
+def get_network_neff_map(checkpoint_path, data_config='configs/simulator.yaml',
+                         index=6, exposure=0.1):
+    """Compute per-pixel N_eff using REAL spectroscopic data.
+
+    N_eff is activation-dependent for nonlinear networks. Random input
+    inflates N_eff because it activates all spatial positions uniformly.
+    Real data with a dominant central peak produces the correct, much lower value.
+    """
+    sim = MapSimulator.from_yaml(data_config)
+    s = sim.generate(index=index)
+    short_counts = s.short_counts[exposure]
+    peak_idx = int(np.argmin(np.abs(s.axis - 520.7)))
+    w_start = max(0, peak_idx - 64)
+    w_end = min(len(s.axis), peak_idx + 64)
+    cropped = short_counts[:, :, w_start:w_end]  # (H, W, 128)
+    H, W = cropped.shape[0], cropped.shape[1]
+
     print(f"Computing per-pixel N_eff map for network ({checkpoint_path})...")
-    print("This will take a few minutes because it runs 4096 backward passes.")
-    
+    print(f"Input: real sample {index}, exposure={exposure}, shape={cropped.shape}")
+    print(f"This will take a few minutes because it runs {H*W} backward passes.")
+
     model = SpatialSpectralUNet(128, 128, 64, 2)
     ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
     if 'model_state_dict' in ckpt:
@@ -56,50 +79,47 @@ def get_network_neff_map(checkpoint_path, H=64, W=64):
     model.eval()
     for p in model.parameters():
         p.requires_grad_(False)
-        
-    # We use a dummy input of the correct size
-    inp = torch.randn(1, 128, H, W, requires_grad=True)
+
+    # Use real data as input — NOT random noise
+    inp = torch.from_numpy(cropped.transpose(2, 0, 1).astype(np.float32)).unsqueeze(0)
+    inp.requires_grad_(True)
     out = model(inp)
-    
+
     neff_map = np.zeros((H, W))
-    
     t0 = time.time()
-    # To avoid 4096 separate passes, we can compute them row by row or just one by one.
-    # One by one is foolproof.
+
     for y in range(H):
         for x in range(W):
-            # Sum over spectral channels to get spatial footprint
             val = out[0, :, y, x].sum()
-            
-            is_last = (y == H-1 and x == W-1)
+            is_last = (y == H - 1 and x == W - 1)
             grad = torch.autograd.grad(val, inp, retain_graph=not is_last)[0]
-            
             spatial_grad = grad[0].sum(dim=0).abs()
             sum_w = spatial_grad.sum().item()
-            sum_sq = (spatial_grad**2).sum().item()
-            
-            neff_map[y, x] = (sum_w**2) / sum_sq if sum_sq > 0 else 1.0
-            
-            # clear grad for the next iteration (not strictly necessary with autograd.grad, 
-            # but good practice if using .backward())
-            
+            sum_sq = (spatial_grad ** 2).sum().item()
+            neff_map[y, x] = (sum_w ** 2) / sum_sq if sum_sq > 0 else 1.0
+
         if y % 8 == 0:
             print(f"Row {y}/{H} done. Elapsed: {time.time()-t0:.1f}s")
-            
+
     t1 = time.time()
     print(f"Network Neff Map computed in {t1-t0:.2f}s")
     print(f"Median N_eff: {np.median(neff_map):.2f}")
     print(f"Mean N_eff:   {np.mean(neff_map):.2f}")
-    
+
     return neff_map
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--network', type=str, help='Path to checkpoint')
     parser.add_argument('--gauss-only', action='store_true', help='Only run the gaussian test')
+    parser.add_argument('--data-config', default='configs/simulator.yaml')
+    parser.add_argument('--index', type=int, default=6)
+    parser.add_argument('--exposure', type=float, default=0.1)
     args = parser.parse_args()
-    
+
     gauss_map = get_spatial_gauss_neff_map(sigma=2.0)
-    
+
     if not args.gauss_only and args.network:
-        net_map = get_network_neff_map(args.network)
+        net_map = get_network_neff_map(
+            args.network, args.data_config, args.index, args.exposure
+        )

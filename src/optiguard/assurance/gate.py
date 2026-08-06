@@ -10,26 +10,39 @@ from scipy import stats
 def test_precision_floor(
     claimed_sigma: float,
     crlb: float,
+    neff: float = 1.0,
     tol: float = 1e-9
 ) -> Dict[str, Any]:
-    """T1 Gate: Check if claimed precision violates the fundamental Cramer-Rao bound.
+    """T1 Gate: Check if claimed precision violates the N_eff-adjusted Cramer-Rao bound.
 
     Physics rationale:
     No unbiased estimator can achieve a variance below the CRLB for the available
     effective photon budget. Any restoration reporting an uncertainty tighter
     than the information-theoretic floor is physically impossible (hallucination).
 
+    When the method legitimately pools N_eff independent pixels, the floor
+    tightens by 1/sqrt(N_eff) -- from the single-pixel CRLB to CRLB/sqrt(N_eff).
+    Passing neff > 1 grants that credit. Passing neff derived from a probe on
+    random noise instead of real data will artificially inflate N_eff and weaken
+    the gate -- probing must use real, in-distribution data.
+
     Args:
         claimed_sigma: Standard error claimed by the estimator / network, cm^-1
-        crlb: Information-theoretic lower bound, cm^-1
+        crlb: Single-pixel information-theoretic lower bound, cm^-1
+        neff: Effective number of pooled pixels (Kish effective sample size, >= 1).
+              Default 1.0 = no pooling credit granted.
         tol: Small tolerance for numerical edge cases
 
     Returns:
-        Dict with "failed": bool, "claimed_sigma", "crlb", "ratio", "slack"
+        Dict with "failed": bool, "claimed_sigma", "crlb", "neff", "floor", "ratio", "slack"
     """
     claimed = float(claimed_sigma)
     bound = float(crlb)
-    failed = bool(claimed < (bound - tol))
+    neff = max(float(neff), 1.0)
+
+    # N_eff-adjusted floor: pooling N_eff pixels reduces uncertainty by 1/sqrt(N_eff)
+    floor = bound / (neff ** 0.5)
+    failed = bool(claimed < (floor - tol))
 
     return {
         "gate": "T1",
@@ -37,8 +50,10 @@ def test_precision_floor(
         "failed": failed,
         "claimed_sigma": claimed,
         "crlb": bound,
-        "ratio": claimed / bound if bound > 0 else float("inf"),
-        "slack": claimed - bound
+        "neff": neff,
+        "floor": floor,
+        "ratio": claimed / floor if floor > 0 else float("inf"),
+        "slack": claimed - floor
     }
 
 

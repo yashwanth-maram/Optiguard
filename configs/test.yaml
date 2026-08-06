@@ -1,0 +1,25 @@
+# Architecture and Training Configuration for OptiGuard Restoration v1
+# Spatial-Spectral U-Net model with max 2 downsampling stages
+
+model:
+  name: "SpatialSpectralUNet"
+  in_channels: 128          # Spectral window width
+  out_channels: 128
+  base_channels: 64         # Spatial feature channels
+  depth: 2                  # 2 downsampling stages maximum (64x64 -> 32x32 -> 16x16)
+  spectral_conv_kernel: 5
+  spatial_conv_kernel: 3
+  dropout: 0.05
+
+training:
+  epochs: 12
+  batch_size: 8             # Number of (128, 64, 64) cubes per batch
+  lr: 0.0005
+  min_lr: 0.00001
+  weight_decay: 0.0001
+  exposure_s: 0.1
+  reference_exposure_s: 5.0
+  window_channels: 128
+  checkpoint_every: 5       # Validate every 5 epochs
+  select_on: "constrained_gain"
+  recall_floor: 0.719       # Strict raw-baseline recall at 1.5 CRLB to accept model

@@ -158,11 +158,25 @@ def test_effective_photon_count_uniform_pooling():
 # STEP 10 - each gate test must fire on its own failure mode
 # ---------------------------------------------------------------------------
 def test_T1_flags_fabricated_precision():
-    """A claimed sigma below the CRLB of the effective budget is impossible."""
+    """A claimed sigma below the N_eff-adjusted CRLB is physically impossible.
+
+    With neff=1 (default), the floor is the raw single-pixel CRLB.
+    With neff=4 (2x2 pool), the floor tightens to crlb/sqrt(4) = crlb/2.
+    A claim below either floor must be flagged regardless.
+    """
     from optiguard.assurance.gate import test_precision_floor
 
+    # Single-pixel case (neff=1.0 default) - preserved original assertions
     assert test_precision_floor(claimed_sigma=0.010, crlb=0.050)["failed"]
     assert not test_precision_floor(claimed_sigma=0.060, crlb=0.050)["failed"]
+
+    # N_eff-pooled case: floor = 0.050 / sqrt(4) = 0.025
+    assert test_precision_floor(claimed_sigma=0.020, crlb=0.050, neff=4.0)["failed"]
+    assert not test_precision_floor(claimed_sigma=0.030, crlb=0.050, neff=4.0)["failed"]
+
+    # Verify floor is exactly crlb / sqrt(neff)
+    result = test_precision_floor(claimed_sigma=0.030, crlb=0.050, neff=4.0)
+    assert abs(result["floor"] - 0.025) < 1e-9
 
 
 def test_T2_flags_pooling_across_a_boundary():
