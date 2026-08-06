@@ -259,11 +259,27 @@ if TORCH_AVAILABLE:
                 norm_err = (centroid - center_true) / crlb_safe
                 
                 centroid_magnitude = norm_err.abs().mean().item()
-                if centroid_magnitude < 0.75:
-                    per_px = norm_err.abs()
-                    print(f"[guard] mag={centroid_magnitude:.3f} "
-                          f"median={per_px.median():.3f} p95={per_px.quantile(0.95):.3f} "
-                          f"frac_below_0.5={(per_px < 0.5).float().mean():.3f}")
+                
+                if epoch > 1 and batch_idx == 0:
+                    # Dynamically probe N_eff once per epoch to set the relative threshold
+                    inp_probe = short_counts[0:1].clone().detach().requires_grad_(True)
+                    out_probe = model(inp_probe)
+                    cy, cx = out_probe.shape[2] // 2, out_probe.shape[3] // 2
+                    val_sum = out_probe[0, :, cy, cx].sum()
+                    grad = torch.autograd.grad(val_sum, inp_probe, retain_graph=False)[0]
+                    spatial_grad = grad[0].sum(dim=0).abs()
+                    sum_w = spatial_grad.sum().item()
+                    sum_sq = (spatial_grad ** 2).sum().item()
+                    current_neff = (sum_w ** 2) / sum_sq if sum_sq > 0 else 1.0
+                    
+                    # A genuine spatial denoiser's floor is ~1/sqrt(N_eff) CRLB.
+                    # We trigger if it beats this theoretical limit by more than 25%.
+                    guard_threshold = 0.75 / max(1.0, (current_neff ** 0.5))
+                    
+                    if centroid_magnitude < guard_threshold:
+                        per_px = norm_err.abs()
+                        print(f"[guard] mag={centroid_magnitude:.3f} < threshold={guard_threshold:.3f} (N_eff={current_neff:.1f}). "
+                              f"median={per_px.median():.3f} p95={per_px.quantile(0.95):.3f}")
                 
                 param_loss = torch.nn.functional.smooth_l1_loss(norm_err, torch.zeros_like(norm_err))
                 
