@@ -267,3 +267,135 @@ def test_photon_consistency(
         "df": df,
         "critical_value": crit_val
     }
+
+
+def evaluate_gate(
+    sample,
+    restored_counts: np.ndarray,
+    neff_map: np.ndarray,
+    read_noise_e: float = 0.0,
+    alpha_t2: float = 0.01,
+    alpha_t3: float = 0.01,
+    t2_sigma: float = 2.0,
+    spectral_window: Optional[tuple] = None
+) -> Dict[str, Any]:
+    """Wire T1/T2/T3 into a single per-pixel support classification.
+
+    For each pixel, evaluates:
+    - T1: Is the network's fitted precision tighter than crlb/sqrt(N_eff)?
+    - T2: Is the neighbourhood spectrally homogeneous (pooling legitimate)?
+    - T3: Is the restored spectrum consistent with the raw photon counts?
+
+    Returns a per-pixel support_class map:
+      'PASS'    - all three gates pass (restoration can be trusted)
+      'FAIL_T1' - claimed precision beats the N_eff-adjusted floor (fabricated)
+      'FAIL_T2' - neighbourhood is heterogeneous (pooling across a boundary)
+      'FAIL_T3' - restored spectrum inconsistent with raw counts (peak shifted)
+
+    Multiple failures are possible; the support_class records the first failure
+    in the T1 > T2 > T3 priority order (T1 is the most fundamental violation).
+
+    Args:
+        sample: MapSample object with .axis, .short_counts, .theta_true, .meta
+        restored_counts: (H, W, C) array of restored spectral counts
+        neff_map: (H, W) per-pixel N_eff from Jacobian probe (real-data probe)
+        read_noise_e: Detector read noise in electrons
+        alpha_t2: Significance level for T2 boundary test
+        alpha_t3: Significance level for T3 photon consistency test
+        t2_sigma: Gaussian sigma (pixels) for T2 neighbourhood
+        spectral_window: Optional (start, end) channel indices for T2
+
+    Returns:
+        Dict with:
+          'support_class':  (H, W) array of strings
+          'fail_t1':        (H, W) bool
+          'fail_t2':        (H, W) bool
+          'fail_t3':        (H, W) bool
+          'precision_ratio': (H, W) claimed_sigma / floor
+          'crlb_map':       (H, W) single-pixel CRLB
+          'floor_map':      (H, W) N_eff-adjusted floor
+          'summary':        dict of counts per class
+    """
+    from optiguard.physics.crlb import crlb_plugin_map
+    from optiguard.estimation.fit import fit_lorentzian_map
+
+    axis = sample.axis
+    raw_counts = sample.short_counts[list(sample.short_counts.keys())[0]]
+    H, W, C = raw_counts.shape
+    peak_nominal = float(sample.meta.get("peak_cm1", 520.7))
+
+    # --- Fit the restored map to get claimed precision ---
+    theta_restored = fit_lorentzian_map(axis, restored_counts,
+                                        read_noise_e=read_noise_e,
+                                        nominal_center_cm1=peak_nominal)
+    # sigma_center is the sqrt of the (0,0) element of the fit's Jacobian-based covariance.
+    # This is the estimator's self-reported uncertainty, not an oracle comparison.
+    # CRLB bounds variance across realizations; comparing single-pixel errors to CRLB
+    # is statistically invalid and would give spurious T1 flags ~34% of the time.
+    claimed_sigma = theta_restored["sigma_center"]  # (H, W), from fit covariance
+
+    # --- T1: precision floor ---
+    # Crop to spectral window around peak for CRLB calculation
+    peak_idx = int(np.argmin(np.abs(axis - peak_nominal)))
+    w_start = max(0, peak_idx - 64)
+    w_end = min(C, peak_idx + 64)
+    counts_window = restored_counts[:, :, w_start:w_end]
+
+    crlb_map = crlb_plugin_map(
+        axis=axis,
+        counts_window=counts_window,
+        fitted_center=theta_restored["center"],
+        read_noise_e=read_noise_e
+    )
+    floor_map = crlb_map / np.maximum(neff_map ** 0.5, 1.0)
+    fail_t1 = claimed_sigma < (floor_map - 1e-9)
+    precision_ratio = np.where(floor_map > 0, claimed_sigma / floor_map, np.inf)
+
+    # --- T2: pooling legitimacy across the map ---
+    t2_result = test_pooling_legitimacy_map(
+        raw_counts,
+        sigma=t2_sigma,
+        read_noise_e=read_noise_e,
+        alpha=alpha_t2,
+        spectral_window=spectral_window
+    )
+    fail_t2 = t2_result["failed"]
+
+    # --- T3: per-pixel photon consistency ---
+    fail_t3 = np.zeros((H, W), dtype=bool)
+    for y in range(H):
+        for x in range(W):
+            r = test_photon_consistency(
+                raw_counts[y, x],
+                restored_counts[y, x],
+                read_noise_e=read_noise_e,
+                alpha=alpha_t3
+            )
+            fail_t3[y, x] = r["failed"]
+
+    # --- Compose support class (T1 > T2 > T3 priority) ---
+    support_class = np.full((H, W), "PASS", dtype=object)
+    support_class[fail_t3] = "FAIL_T3"
+    support_class[fail_t2] = "FAIL_T2"
+    support_class[fail_t1] = "FAIL_T1"
+
+    summary = {
+        "n_pass":    int(np.sum(support_class == "PASS")),
+        "n_fail_t1": int(np.sum(support_class == "FAIL_T1")),
+        "n_fail_t2": int(np.sum(support_class == "FAIL_T2")),
+        "n_fail_t3": int(np.sum(support_class == "FAIL_T3")),
+        "total":     int(H * W),
+    }
+    summary["pass_rate"] = summary["n_pass"] / summary["total"]
+
+    return {
+        "support_class":   support_class,
+        "fail_t1":         fail_t1,
+        "fail_t2":         fail_t2,
+        "fail_t3":         fail_t3,
+        "precision_ratio": precision_ratio,
+        "crlb_map":        crlb_map,
+        "floor_map":       floor_map,
+        "summary":         summary,
+    }
+

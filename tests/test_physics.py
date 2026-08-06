@@ -179,6 +179,45 @@ def test_T1_flags_fabricated_precision():
     assert abs(result["floor"] - 0.025) < 1e-9
 
 
+def test_T1_no_double_counting_of_neff():
+    """The crlb argument must be the raw single-pixel bound; neff is applied once.
+
+    If a caller pre-divides crlb by sqrt(N_eff) before passing it in AND also
+    passes neff>1, the gate divides by sqrt(N_eff) a second time, producing a
+    floor that is too tight and will incorrectly reject valid restorations.
+
+    Guard: floor = single_pixel_crlb / sqrt(neff), not further divided.
+    Concretely: neff=9 -> floor = crlb / 3 (one division).
+    """
+    from optiguard.assurance.gate import test_precision_floor
+
+    single_pixel_crlb = 0.090
+    neff = 9.0
+    expected_floor = single_pixel_crlb / 3.0  # 0.030
+
+    r = test_precision_floor(claimed_sigma=0.040, crlb=single_pixel_crlb, neff=neff)
+    assert abs(r["floor"] - expected_floor) < 1e-9, (
+        f"Floor should be {expected_floor:.4f} (crlb/sqrt(9)), got {r['floor']:.4f}"
+    )
+    assert not r["failed"], "0.040 > floor=0.030, should pass"
+
+    # Double-counting trap: caller pre-pools crlb AND passes neff -- do NOT do this.
+    # The gate computes floor = (crlb/3) / 3 = 0.010, which is too tight.
+    pre_pooled_crlb = single_pixel_crlb / 3.0  # already divided once
+    r_double = test_precision_floor(claimed_sigma=0.040, crlb=pre_pooled_crlb, neff=neff)
+    assert r_double["floor"] < 0.020, (
+        "Double-counting produces a spuriously tight floor -- caller must pass raw CRLB"
+    )
+
+    # Correct usage when caller has only pre-pooled crlb: pass neff=1.0
+    r_correct = test_precision_floor(claimed_sigma=0.040, crlb=pre_pooled_crlb, neff=1.0)
+    assert abs(r_correct["floor"] - expected_floor) < 1e-9, (
+        "Passing pre-pooled crlb with neff=1 gives the same floor as single-pixel crlb with neff=9"
+    )
+
+
+
+
 def test_T2_flags_pooling_across_a_boundary():
     """
     Pooling is only legitimate over a homogeneous neighbourhood. Across a
