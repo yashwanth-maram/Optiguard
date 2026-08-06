@@ -12,6 +12,8 @@ from optiguard.models.spatial_spectral import SpatialSpectralUNet, TORCH_AVAILAB
 if TORCH_AVAILABLE:
     import torch
 
+from optiguard.eval.baselines import fit_map, _nominal
+
 
 def load_restoration_method(checkpoint_path: str, config_path: Optional[str] = None) -> Callable[[np.ndarray, Dict[str, Any], np.ndarray], np.ndarray]:
     """
@@ -48,6 +50,8 @@ def load_restoration_method(checkpoint_path: str, config_path: Optional[str] = N
     ).to(device)
     
     state_dict = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
+        state_dict = state_dict["model_state_dict"]
     model.load_state_dict(state_dict)
     model.eval()
 
@@ -55,6 +59,10 @@ def load_restoration_method(checkpoint_path: str, config_path: Optional[str] = N
         """
         Inference function for a full sample matching the harness baseline signature.
         """
+        short_counts = sample.short_counts[exposure]
+        meta = sample.meta
+        axis = sample.axis
+        
         H, W, C = short_counts.shape
         peak_nominal = _nominal(sample)
         
