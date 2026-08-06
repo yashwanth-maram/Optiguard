@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-label="OptiGuard AI — photon-budget measurement assurance">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#080D12"/>
+      <stop offset="55%" stop-color="#101A22"/>
+      <stop offset="100%" stop-color="#0A1218"/>
+    </linearGradient>
+    <linearGradient id="peakFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4FD1C5" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#4FD1C5" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="sweep" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4FD1C5" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#4FD1C5" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#4FD1C5" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+
+    <style>
+      .mono  { font-family: "SFMono-Regular", "IBM Plex Mono", Consolas, monospace; }
+      .title { font-size: 50px; font-weight: 700; letter-spacing: 7px; fill: #F2F6F8; }
+      .sub   { font-size: 15.5px; letter-spacing: 1.1px; fill: #7FA6B4; }
+      .tag   { font-size: 12px; letter-spacing: 2.4px; fill: #4FD1C5; }
+      .lbl   { font-size: 11px; letter-spacing: 1.4px; fill: #5E7C89; }
+      .val   { font-size: 13px; font-weight: 600; fill: #9FE8DF; }
+
+      /* photons arrive one by one, then the cycle restarts */
+      .ph { animation: arrive 7s linear infinite; }
+      @keyframes arrive {
+        0%,4%   { opacity: 0; transform: translateY(-16px); }
+        9%      { opacity: 1; transform: translateY(0); }
+        72%     { opacity: 1; transform: translateY(0); }
+        86%,100%{ opacity: 0; transform: translateY(0); }
+      }
+
+      /* the spectrum draws itself as counts accumulate */
+      .curve { animation: draw 7s ease-out infinite; }
+      @keyframes draw {
+        0%,6%  { stroke-dashoffset: 1400; }
+        62%    { stroke-dashoffset: 0; }
+        86%    { stroke-dashoffset: 0; opacity: 1; }
+        100%   { stroke-dashoffset: 0; opacity: 0; }
+      }
+      .fillArea { animation: fadeArea 7s ease-out infinite; }
+      @keyframes fadeArea { 0%,20%{opacity:0} 66%{opacity:1} 86%{opacity:1} 100%{opacity:0} }
+
+      /* the precision bound narrows as 1/sqrt(N) */
+      .bound { animation: tighten 7s ease-out infinite; }
+      @keyframes tighten {
+        0%,8%  { transform: scaleX(1);    opacity: 0.10; }
+        40%    { transform: scaleX(0.52); opacity: 0.22; }
+        66%    { transform: scaleX(0.17); opacity: 0.34; }
+        86%    { transform: scaleX(0.17); opacity: 0.34; }
+        100%   { transform: scaleX(1);    opacity: 0.10; }
+      }
+
+      .sweepline { animation: sweep 7s linear infinite; }
+      @keyframes sweep { 0%{transform:translateX(-260px)} 100%{transform:translateX(1260px)} }
+
+      .pulse { animation: pulse 3.2s ease-in-out infinite; }
+      @keyframes pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
+
+      @media (prefers-reduced-motion: reduce) {
+        .ph,.curve,.fillArea,.bound,.sweepline,.pulse { animation: none; opacity: 1; }
+        .curve { stroke-dashoffset: 0; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="340" fill="url(#bg)"/>
+
+  <!-- faint measurement grid -->
+  <g stroke="#1B2B36" stroke-width="1">
+    <path d="M0 60H1200M0 130H1200M0 200H1200M0 270H1200"/>
+    <path d="M120 0V340M300 0V340M480 0V340M660 0V340M840 0V340M1020 0V340"/>
+  </g>
+  <rect class="sweepline" x="0" y="0" width="260" height="340" fill="url(#sweep)"/>
+
+  <!-- ── identity ── -->
+  <text class="mono tag" x="62" y="86">PHOTON-BUDGET MEASUREMENT ASSURANCE</text>
+  <text class="mono title" x="60" y="152">OPTIGUARD</text>
+  <text class="mono title" x="478" y="152" font-size="50" fill="#4FD1C5" opacity="0.9">AI</text>
+  <text class="mono sub" x="62" y="192">Certifies which measured values the photons</text>
+  <text class="mono sub" x="62" y="214">actually support &#8212; and declines the rest.</text>
+
+  <g class="mono" transform="translate(62,262)">
+    <rect x="0" y="0" width="126" height="26" rx="3" fill="none" stroke="#2A4A56"/>
+    <text class="lbl" x="12" y="17">TRL 4</text>
+    <rect x="138" y="0" width="168" height="26" rx="3" fill="none" stroke="#2A4A56"/>
+    <text class="lbl" x="150" y="17">CRLB-CERTIFIED</text>
+    <rect x="316" y="0" width="150" height="26" rx="3" fill="none" stroke="#2A4A56"/>
+    <text class="lbl" x="328" y="17">ON-PREMISE</text>
+  </g>
+
+  <!-- ── the measurement ── -->
+  <g transform="translate(0,10)">
+    <line x1="560" y1="262" x2="1150" y2="262" stroke="#243945" stroke-width="1.5"/>
+
+    <!-- precision bound: narrows as photons accumulate -->
+    <g class="bound" style="transform-origin: 852px 0px;">
+      <rect x="762" y="86" width="180" height="176" fill="#4FD1C5" opacity="0.13"/>
+    </g>
+
+    <path class="fillArea" d="M572 262 C 700 260, 792 256, 822 190 C 838 128, 846 100, 852 100
+                              C 858 100, 866 128, 882 190 C 912 256, 1004 260, 1140 262 Z"
+          fill="url(#peakFill)" opacity="1"/>
+    <path class="curve" d="M572 262 C 700 260, 792 256, 822 190 C 838 128, 846 100, 852 100
+                           C 858 100, 866 128, 882 190 C 912 256, 1004 260, 1140 262"
+          fill="none" stroke="#4FD1C5" stroke-width="2.6" stroke-linecap="round" filter="url(#soft)"
+          stroke-dasharray="1400" stroke-dashoffset="0"/>
+
+    <!-- arriving photons -->
+    <g fill="#B7F5EE">
+      <circle class="ph" cx="596"  cy="258" r="2.4" style="animation-delay:.05s"/>
+      <circle class="ph" cx="640"  cy="256" r="2.4" style="animation-delay:.55s"/>
+      <circle class="ph" cx="686"  cy="252" r="2.4" style="animation-delay:.20s"/>
+      <circle class="ph" cx="726"  cy="249" r="2.4" style="animation-delay:1.05s"/>
+      <circle class="ph" cx="768"  cy="243" r="2.4" style="animation-delay:.72s"/>
+      <circle class="ph" cx="800"  cy="226" r="2.6" style="animation-delay:1.45s"/>
+      <circle class="ph" cx="818"  cy="196" r="2.6" style="animation-delay:.92s"/>
+      <circle class="ph" cx="832"  cy="152" r="2.8" style="animation-delay:1.80s"/>
+      <circle class="ph" cx="843"  cy="118" r="2.8" style="animation-delay:1.28s"/>
+      <circle class="ph" cx="852"  cy="103" r="3.1" style="animation-delay:2.10s"/>
+      <circle class="ph" cx="861"  cy="118" r="2.8" style="animation-delay:1.62s"/>
+      <circle class="ph" cx="872"  cy="152" r="2.8" style="animation-delay:2.40s"/>
+      <circle class="ph" cx="886"  cy="196" r="2.6" style="animation-delay:1.15s"/>
+      <circle class="ph" cx="904"  cy="226" r="2.6" style="animation-delay:2.70s"/>
+      <circle class="ph" cx="938"  cy="243" r="2.4" style="animation-delay:.38s"/>
+      <circle class="ph" cx="980"  cy="250" r="2.4" style="animation-delay:2.95s"/>
+      <circle class="ph" cx="1026" cy="255" r="2.4" style="animation-delay:1.90s"/>
+      <circle class="ph" cx="1072" cy="258" r="2.4" style="animation-delay:3.20s"/>
+      <circle class="ph" cx="1114" cy="260" r="2.4" style="animation-delay:2.55s"/>
+    </g>
+
+    <line x1="852" y1="86" x2="852" y2="262" stroke="#9FE8DF" stroke-width="1" stroke-dasharray="3 4" class="pulse"/>
+
+    <g class="mono">
+      <text class="lbl" x="572" y="288">520.7 cm&#8315;&#185;</text>
+      <text class="lbl" x="1064" y="288">&#957;</text>
+      <text class="val" x="762" y="76">precision floor &#8592; set by photons, not by algorithm</text>
+    </g>
+  </g>
+</svg>
