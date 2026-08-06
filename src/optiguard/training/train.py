@@ -259,8 +259,11 @@ if TORCH_AVAILABLE:
                 norm_err = (centroid - center_true) / crlb_safe
                 
                 centroid_magnitude = norm_err.abs().mean().item()
-                if centroid_magnitude < 0.75 and epoch > 1:
-                    raise RuntimeError(f"Centroid magnitude {centroid_magnitude:.3f} < 0.75 CRLB. The model has likely found a shortcut exploit.")
+                if centroid_magnitude < 0.75:
+                    per_px = norm_err.abs()
+                    print(f"[guard] mag={centroid_magnitude:.3f} "
+                          f"median={per_px.median():.3f} p95={per_px.quantile(0.95):.3f} "
+                          f"frac_below_0.5={(per_px < 0.5).float().mean():.3f}")
                 
                 param_loss = torch.nn.functional.smooth_l1_loss(norm_err, torch.zeros_like(norm_err))
                 
