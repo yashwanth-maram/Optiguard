@@ -50,15 +50,26 @@ plt.figure(figsize=(8, 6))
 difficulties = ['0.5', '1.5', '2.5', '4.0', '10.0']
 x_vals = [float(d) for d in difficulties]
 
-for name, color in [('raw', 'black'), ('spatial_gauss', 'green')]:
+for name, label, color, marker in [('raw', 'Raw (Baseline)', 'black', 'o'), ('spatial_gauss', 'Spatial Gauss (Spatial Failure)', 'green', '^')]:
     b = baselines[name]
     recalls = [b['recall_by_difficulty'][d] for d in difficulties]
-    plt.plot(x_vals, recalls, 'o-', color=color, label=name)
+    plt.plot(x_vals, recalls, marker=marker, color=color, label=label, markersize=8)
 
 # Network (last epoch)
 last_run = network_runs[-1]
 net_recalls_diff = [last_run['recalls'][d] for d in difficulties]
-plt.plot(x_vals, net_recalls_diff, 'o-', color='red', label=f'network (epoch 30)')
+plt.plot(x_vals, net_recalls_diff, marker='o', color='red', label='Network (Spectral Failure)', markersize=8)
+
+# Annotate the dip
+plt.annotate('Critical Failure\n(Spectral Smoothing)', 
+             xy=(1.5, net_recalls_diff[1]), xytext=(1.8, 0.4),
+             arrowprops=dict(facecolor='red', shrink=0.05, width=1, headwidth=6),
+             color='red')
+
+plt.annotate('Critical Failure\n(Spatial Pooling)', 
+             xy=(2.5, baselines['spatial_gauss']['recall_by_difficulty']['2.5']), xytext=(3.0, 0.2),
+             arrowprops=dict(facecolor='green', shrink=0.05, width=1, headwidth=6),
+             color='green')
 
 plt.xlabel('Difficulty (CRLB at 0.1s)')
 plt.ylabel('Recall')
