@@ -254,12 +254,13 @@ if TORCH_AVAILABLE:
                 axis_exp = axis[:, None, None, :]               # (B, 1, 1, C)
                 centroid = (weights * axis_exp).sum(dim=-1)     # (B, H, W)
                 
-                # CRLB-normalised smooth-L1: error in units of CRLB
+                # CRLB-normalised error (signed)
                 crlb_safe = torch.clamp(crlb_map, min=1e-6)
-                norm_err = (centroid - center_true).abs() / crlb_safe
+                norm_err = (centroid - center_true) / crlb_safe
                 
-                if norm_err.mean().item() < 0.75 and epoch > 1:
-                    raise RuntimeError(f"Centroid loss {norm_err.mean().item():.3f} < 0.75 CRLB. The model has likely found a shortcut exploit.")
+                centroid_magnitude = norm_err.abs().mean().item()
+                if centroid_magnitude < 0.75 and epoch > 1:
+                    raise RuntimeError(f"Centroid magnitude {centroid_magnitude:.3f} < 0.75 CRLB. The model has likely found a shortcut exploit.")
                 
                 param_loss = torch.nn.functional.smooth_l1_loss(norm_err, torch.zeros_like(norm_err))
                 
