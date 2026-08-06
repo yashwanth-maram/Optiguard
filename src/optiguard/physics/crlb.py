@@ -72,6 +72,7 @@ def crlb_plugin_map(axis, counts_window, fitted_center, read_noise_e,
     from optiguard.physics.lineshapes import lorentzian
 
     H, W, Cw = counts_window.shape
+    disp = float(axis[1] - axis[0]) if len(axis) > 1 else 0.55
 
     # Background: mean of 16 channels on each shoulder
     shoulder = 16
@@ -79,16 +80,27 @@ def crlb_plugin_map(axis, counts_window, fitted_center, read_noise_e,
               np.mean(counts_window[..., -shoulder:], axis=-1)) / 2.0
     bg_map = np.maximum(bg_map, 0.0)
 
-    # Total signal: integrated counts minus background * window width
-    total_counts = np.sum(counts_window, axis=-1)
-    amplitude_map = np.maximum(total_counts - bg_map * Cw, 1.0)
-
-    # Pooled FWHM: map median is robust to a few badly-fit pixels
+    # Pooled FWHM: map median is robust to a few badly-fit pixels.
+    # Default of 3.5 cm-1 from instrument prior; caller should pass the
+    # map-median fitted FWHM when available.
     if fwhm_pooled is None:
-        # Crude default: assume FWHM spans ~7 channels at Lorentzian half-width
-        disp = float(axis[1] - axis[0]) if len(axis) > 1 else 0.55
-        fwhm_pooled = 7.0 * disp
+        fwhm_pooled = 3.5  # instrument prior (cm-1)
     fwhm_map = np.full((H, W), float(fwhm_pooled), dtype=np.float32)
+
+    # Signal integral: total counts minus background contribution.
+    # For a Lorentzian with peak height A and FWHM Gamma over a wide window:
+    #   integral = A * (pi * Gamma / 2) / disp   (in discrete-channel units)
+    # crlb_peak_position_map expects A (peak height), not the integral.
+    # Bug: previous code passed the integral directly, underestimating CRLB
+    # by sqrt(integral/A) ~ sqrt(pi*fwhm/(2*disp)) ≈ 3×.
+    total_signal_integral = np.maximum(
+        np.sum(counts_window, axis=-1) - bg_map * Cw, 1.0
+    )
+    # Convert integral -> peak height: A = integral / (pi * fwhm / (2 * disp))
+    lorentzian_integral_factor = np.pi * fwhm_map / (2.0 * disp)
+    amplitude_map = np.maximum(
+        total_signal_integral / lorentzian_integral_factor, 1.0
+    )
 
     return crlb_peak_position_map(
         axis=axis,
