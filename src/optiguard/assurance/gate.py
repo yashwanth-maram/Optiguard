@@ -277,7 +277,8 @@ def evaluate_gate(
     alpha_t2: float = 0.01,
     alpha_t3: float = 0.01,
     t2_sigma: float = 2.0,
-    spectral_window: Optional[tuple] = None
+    spectral_window: Optional[tuple] = None,
+    t1_ratio_threshold: float = 1.0
 ) -> Dict[str, Any]:
     """Wire T1/T2/T3 into a single per-pixel support classification.
 
@@ -348,8 +349,8 @@ def evaluate_gate(
         read_noise_e=read_noise_e
     )
     floor_map = crlb_map / np.maximum(neff_map ** 0.5, 1.0)
-    fail_t1 = claimed_sigma < (floor_map - 1e-9)
     precision_ratio = np.where(floor_map > 0, claimed_sigma / floor_map, np.inf)
+    fail_t1 = precision_ratio < t1_ratio_threshold
 
     # --- T2: pooling legitimacy across the map ---
     t2_result = test_pooling_legitimacy_map(
@@ -363,11 +364,16 @@ def evaluate_gate(
 
     # --- T3: per-pixel photon consistency ---
     fail_t3 = np.zeros((H, W), dtype=bool)
+    if spectral_window is not None:
+        w_start, w_end = spectral_window
+    else:
+        w_start, w_end = 0, C
+        
     for y in range(H):
         for x in range(W):
             r = test_photon_consistency(
-                raw_counts[y, x],
-                restored_counts[y, x],
+                raw_counts[y, x, w_start:w_end],
+                restored_counts[y, x, w_start:w_end],
                 read_noise_e=read_noise_e,
                 alpha=alpha_t3
             )

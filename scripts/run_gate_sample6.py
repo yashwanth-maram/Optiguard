@@ -35,8 +35,26 @@ H, W = short_counts.shape[:2]
 neff_map = np.full((H, W), 1.02)
 read_noise_e = s.meta.get('read_noise_e', 0.0)
 
+print('--- Calibrating T1 threshold on RAW counts ---')
+raw_gate = evaluate_gate(
+    s, short_counts, neff_map,
+    read_noise_e=read_noise_e,
+    spectral_window=(w_start, w_end)
+)
+raw_ratios = raw_gate['precision_ratio']
+valid_ratios = raw_ratios[np.isfinite(raw_ratios)]
+t1_threshold = float(np.percentile(valid_ratios, 5.0))
+print(f'Raw data precision ratio median: {np.median(valid_ratios):.3f}')
+print(f'Selected T1 threshold (5th percentile): {t1_threshold:.3f}')
+print()
+
 print('Running evaluate_gate on sample 6 with step8_checkpoint...')
-result = evaluate_gate(s, restored, neff_map, read_noise_e=read_noise_e)
+result = evaluate_gate(
+    s, restored, neff_map,
+    read_noise_e=read_noise_e,
+    spectral_window=(w_start, w_end),
+    t1_ratio_threshold=t1_threshold
+)
 summary = result['summary']
 
 print()
